@@ -2,4 +2,4 @@ User-agent: *
 Disallow: /admin.html
 Disallow: /gracias.html
 
-Sitemap: https://www.venenciareceptionhall.com/sitemap.xml
+Sitemap: https://www.veneciareceptionhall.com/sitemap.xml

@@ -280,8 +280,12 @@ section { padding: clamp(3.5rem, 8vw, 6.5rem) 0; }
 @media (max-width: 880px) { .pkg-grid { grid-template-columns: 1fr; max-width: 460px; margin-inline: auto; } }
 
 .pkg-card {
-  background: var(--white); border-radius: var(--radius); padding: 2.2rem 1.8rem;
+  /* a whisper of warmth top-to-bottom instead of flat white — subtle enough
+     to still read as a clean card, but no longer a plain white box */
+  background: linear-gradient(170deg, #ffffff 0%, #fbf6ec 100%);
+  border-radius: var(--radius); padding: 2.2rem 1.8rem;
   box-shadow: var(--shadow); position: relative; display: flex; flex-direction: column;
+  border: 1px solid rgba(198, 162, 78, .18);
   border-top: 3px solid var(--teal-soft);
 }
 .pkg-card.popular { border-top-color: var(--gold); }
