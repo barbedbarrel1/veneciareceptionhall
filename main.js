@@ -231,7 +231,7 @@ function renderGallery(filter) {
       ? galleryItems.filter((g, i, arr) => arr.findIndex(x => x.image_url === g.image_url) === i)
       : galleryItems.filter(g => g.category === filter);
     target.innerHTML = items.map(g =>
-      `<div class="g-item"><img src="${g.image_url}" alt="${g.alt_text || 'Venecia Reception Hall event'}" loading="lazy"></div>`).join('');
+      `<div class="g-item"><img src="${g.image_url}" alt="${g.alt_text || 'Venecia Reception Hall event'}"></div>`).join('');
   } else {
     const items = filter === 'all' ? PLACEHOLDER_TILES : PLACEHOLDER_TILES.filter(g => g.category === filter);
     target.innerHTML = items.map(g => `<div class="g-item"><div class="ph">${g.label}</div></div>`).join('');
