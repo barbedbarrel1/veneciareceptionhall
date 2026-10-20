@@ -35,3 +35,7 @@ create policy "auth full access videos"
   on videos for all
   to authenticated
   using (true) with check (true);
+
+-- NOTE (applied 2026-10-19): videos table above, plus the payments sign rule:
+-- alter table payments add constraint payments_amount_sign_check check (
+--   (type in ('deposit','payment','credit') and amount > 0) or (type = 'refund' and amount < 0));

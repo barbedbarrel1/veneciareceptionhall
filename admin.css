@@ -212,6 +212,15 @@ th.num { text-align: right; }
 }
 .toast.show { display: block; }
 
+/* ---------- payment entry safety ---------- */
+.pay-row .credit { color: var(--green); }
+.pay-preview:empty { display: none; }
+.pay-preview {
+  margin-top: .2rem; padding: .55rem .75rem; border-radius: 8px; font-size: .85rem;
+  background: var(--teal-soft); color: var(--teal-deep);
+}
+.pay-preview.warn { background: var(--yellow-soft); color: var(--yellow); border: 1px solid rgba(183,121,31,.35); }
+
 /* ---------- print buttons (screen) ---------- */
 .pay-right { display: flex; align-items: center; gap: .5rem; }
 .receipt-btn {

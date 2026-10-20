@@ -102,6 +102,34 @@ function fmtDate(d) {
   if (!d) return '—';
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+// today's date in the VENUE's local time. toISOString() is UTC, which in
+// Arizona flips to tomorrow after 5pm and mis-dates evening payments.
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/* ---------------- money safety ----------------
+   Balance = contract − sum(amounts). So the TYPE decides the sign:
+   deposit / payment / credit lower the balance (stored positive),
+   a refund is money handed back (stored negative). The database
+   enforces the same rule (payments_amount_sign_check), so a wrong
+   sign can never be saved — from this panel or anywhere else. */
+function signedAmount(type, amt) {
+  return type === 'refund' ? -Math.abs(amt) : Math.abs(amt);
+}
+
+// returns a warning (HTML) when an entry looks like a typo, or '' if it's fine
+function isSuspicious(type, amt, owed, paid) {
+  if (type === 'refund' && amt > paid)
+    return `⚠ Refund is more than the ${money(paid)} they've paid in total.`;
+  if (type !== 'refund' && amt > Math.max(0, owed))
+    return owed <= 0
+      ? '⚠ This client is already paid in full.'
+      : `⚠ This is more than the ${money(owed)} they still owe — check for an extra zero.`;
+  return '';
+}
+
 const EVENT_TYPES = { wedding: 'Wedding', quinceanera: 'Quinceañera', sweet16: 'Sweet 16', baptism: 'Baptism', graduation: 'Graduation', other: 'Other' };
 function eventTypeLabel(t) { return EVENT_TYPES[t] || (t || '—'); }
 
@@ -126,14 +154,18 @@ async function loadDashboard() {
   if (balErr || payErr) { toast('Could not load dashboard data.'); return; }
 
   const rows = balances || [];
-  // credits don't move real cash (README: "no cash changed hands") — exclude them from collected totals
+  // credits are discounts, not cash — excluded from collected totals (refunds are negative, so they subtract)
   const pays = (payments || []).filter(p => p.type !== 'credit');
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const yearStart = new Date(now.getFullYear(), 0, 1);
 
-  const collectedMonth = pays.filter(p => new Date(p.paid_at) >= monthStart).reduce((s, p) => s + Number(p.amount), 0);
-  const collectedYear = pays.filter(p => new Date(p.paid_at) >= yearStart).reduce((s, p) => s + Number(p.amount), 0);
+  // 'T00:00:00' = parse as local midnight. A bare 'YYYY-MM-DD' parses as UTC,
+  // which in Arizona is 5pm the day before — so a payment on the 1st was
+  // landing in the previous month's total.
+  const paidDate = p => new Date(p.paid_at + 'T00:00:00');
+  const collectedMonth = pays.filter(p => paidDate(p) >= monthStart).reduce((s, p) => s + Number(p.amount), 0);
+  const collectedYear = pays.filter(p => paidDate(p) >= yearStart).reduce((s, p) => s + Number(p.amount), 0);
   const active = rows.filter(r => r.status === 'active');
   // money still coming in from booked events that haven't happened yet
   const projected = active
@@ -171,7 +203,7 @@ async function loadDashboard() {
 
   const upcoming = active
     .filter(r => r.event_date && new Date(r.event_date + 'T00:00:00') >= now)
-    .sort((a, b) => new Date(a.event_date) - new Date(b.event_date))
+    .sort((a, b) => a.event_date.localeCompare(b.event_date)) // ISO dates sort correctly as text
     .slice(0, 10);
 
   document.getElementById('upcomingList').innerHTML = upcoming.length
@@ -266,7 +298,7 @@ async function openClientForm(client, isEdit) {
       <div class="field"><label>Notes</label><textarea name="notes" rows="2">${client?.notes || ''}</textarea></div>
       ${!isEdit ? `
       <div class="row2">
-        <div class="field"><label>Deposit taken today (optional)</label><input type="number" step="0.01" name="deposit_amount" placeholder="0.00"></div>
+        <div class="field"><label>Deposit taken today (optional)</label><input type="number" step="0.01" min="0" inputmode="decimal" name="deposit_amount" placeholder="0.00"></div>
         <div class="field"><label>Deposit method</label>
           <select name="deposit_method"><option>cash</option><option>zelle</option><option>card</option><option>check</option></select>
         </div>
@@ -296,6 +328,13 @@ async function openClientForm(client, isEdit) {
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
+    const price = parseFloat(form.contract_price.value);
+    if (!(price > 0)) { toast('Contract price must be more than $0.'); return; }
+    if (!isEdit) {
+      const dep = Math.abs(parseFloat(form.deposit_amount?.value || 0));
+      if (dep > price && !confirm(`The deposit (${money(dep)}) is more than the contract price (${money(price)}). Save anyway?`)) return;
+    } else if (price !== Number(client.contract_price) &&
+      !confirm(`Change the contract price from ${money(client.contract_price)} to ${money(price)}? This changes what the client owes.`)) return;
     const payload = {
       name: form.name.value.trim(),
       phone: form.phone.value.trim(),
@@ -316,7 +355,7 @@ async function openClientForm(client, isEdit) {
       const { data: inserted, error } = await db.from('clients').insert(payload).select().single();
       if (error) { toast('Could not add client.'); return; }
 
-      const depositAmount = parseFloat(form.deposit_amount?.value || 0);
+      const depositAmount = Math.abs(parseFloat(form.deposit_amount?.value || 0));
       if (depositAmount > 0) {
         await db.from('payments').insert({
           client_id: inserted.id,
@@ -355,7 +394,7 @@ async function openPayments(client) {
         <div class="pay-row">
           <span>${p.type}${p.method ? ' · ' + p.method : ''}${p.note ? ' · ' + p.note : ''}<div class="meta">${fmtDate(p.paid_at)}</div></span>
           <span class="pay-right">
-            <span class="${Number(p.amount) < 0 ? 'neg' : ''}">${money(p.amount)}</span>
+            <span class="${p.type === 'refund' ? 'neg' : p.type === 'credit' ? 'credit' : ''}">${p.type === 'credit' ? '−' + money(p.amount) + ' off' : money(p.amount)}</span>
             <button type="button" class="receipt-btn" data-receipt="${p.id}" title="Print receipt" aria-label="Print receipt for this payment">🖨</button>
           </span>
         </div>`).join('') : '<p class="empty">No payments yet.</p>'}
@@ -365,21 +404,22 @@ async function openPayments(client) {
     </div>
     <form id="paymentForm" style="margin-top:1.2rem;border-top:1px solid #eee8db;padding-top:1rem">
       <div class="row2">
-        <div class="field"><label>Amount (negative = credit/refund)</label><input type="number" step="0.01" name="amount" required></div>
+        <div class="field"><label>Amount (always positive)</label><input type="number" step="0.01" min="0.01" inputmode="decimal" name="amount" required placeholder="0.00"></div>
         <div class="field"><label>Type</label>
           <select name="type">
-            <option value="deposit">Deposit</option>
-            <option value="payment" selected>Payment</option>
-            <option value="credit">Credit</option>
-            <option value="refund">Refund</option>
+            <option value="deposit">Deposit — money in</option>
+            <option value="payment" selected>Payment — money in</option>
+            <option value="credit">Credit — discount / item removed</option>
+            <option value="refund">Refund — money given back</option>
           </select>
         </div>
       </div>
       <div class="row2">
         <div class="field"><label>Method</label><input name="method" placeholder="cash, zelle, card…"></div>
-        <div class="field"><label>Date</label><input type="date" name="paid_at" value="${new Date().toISOString().slice(0, 10)}"></div>
+        <div class="field"><label>Date</label><input type="date" name="paid_at" value="${todayISO()}"></div>
       </div>
       <div class="field"><label>Note</label><input name="note"></div>
+      <div class="pay-preview" id="payPreview" aria-live="polite"></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-outline" id="modalCancel">Close</button>
         <button type="submit" class="btn btn-teal">Add payment</button>
@@ -391,22 +431,47 @@ async function openPayments(client) {
   document.querySelectorAll('[data-receipt]').forEach(btn =>
     btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
 
-  document.getElementById('paymentForm').addEventListener('submit', async e => {
+  const payForm = document.getElementById('paymentForm');
+  const owedNow = Number(balRow?.balance_owed ?? client.contract_price);
+  const paidNow = Number(balRow?.total_paid ?? 0);
+
+  // live "before → after" line: the person entering it sees exactly what the
+  // balance will become BEFORE saving — the best defense against typos
+  const updatePreview = () => {
+    const amt = Math.abs(parseFloat(payForm.amount.value));
+    const box = document.getElementById('payPreview');
+    if (!amt) { box.innerHTML = ''; box.className = 'pay-preview'; return; }
+    const after = owedNow - signedAmount(payForm.type.value, amt);
+    const risky = isSuspicious(payForm.type.value, amt, owedNow, paidNow);
+    box.className = 'pay-preview' + (risky ? ' warn' : '');
+    box.innerHTML = `Balance: <strong>${money(owedNow)}</strong> → <strong>${money(after)}</strong>` +
+      (risky ? `<br>${risky}` : '');
+  };
+  payForm.amount.addEventListener('input', updatePreview);
+  payForm.type.addEventListener('change', updatePreview);
+
+  payForm.addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
     const submitBtn = f.querySelector('button[type=submit]');
+    const amt = Math.abs(parseFloat(f.amount.value)); // a stray minus sign is ignored
+    if (!amt) { toast('Enter an amount greater than $0.'); return; }
+    const type = f.type.value;
+    const risky = isSuspicious(type, amt, owedNow, paidNow);
+    if (risky && !confirm(`${risky.replace(/<[^>]+>/g, '')}\n\nSave it anyway?`)) return;
+
     submitBtn.disabled = true; // stops a double-click from recording the payment twice
     const payload = {
       client_id: client.id,
-      amount: parseFloat(f.amount.value),
-      type: f.type.value,
+      amount: signedAmount(type, amt), // the TYPE decides the sign, never the person typing
+      type,
       method: f.method.value.trim() || null,
       note: f.note.value.trim() || null,
-      paid_at: f.paid_at.value
+      paid_at: f.paid_at.value || todayISO()
     };
     // .select('id') returns the new row's id so the receipt can be printed right away
     const { data: saved, error } = await db.from('payments').insert(payload).select('id').single();
-    if (error) { submitBtn.disabled = false; toast('Could not add payment.'); return; }
+    if (error) { submitBtn.disabled = false; toast('Could not add payment — ' + error.message); return; }
     toast('Payment added.');
     loadClients();
     loadDashboard();
@@ -414,7 +479,7 @@ async function openPayments(client) {
     // right after taking money is when a receipt is needed — offer it on the spot
     openModal(`
       <h3>Payment recorded</h3>
-      <p style="font-size:.95rem">${money(payload.amount)} from ${esc(client.name)} was saved.</p>
+      <p style="font-size:.95rem">${PAY_LABELS[type]} of ${money(amt)} for ${esc(client.name)} was saved. New balance: <strong>${money(owedNow - payload.amount)}</strong>.</p>
       <div class="modal-actions">
         <button type="button" class="btn btn-outline" id="modalCancel">Done</button>
         <button type="button" class="btn btn-outline" id="afterPayInvoice">🖨 Full invoice</button>
@@ -757,7 +822,7 @@ async function printInvoice(clientId) {
 
       <table class="pd-totals">
         <tr><td>Contract total</td><td class="num">${pm(c.contract_price)}</td></tr>
-        ${credits ? `<tr><td>Credits / adjustments</td><td class="num">${pm(credits)}</td></tr>` : ''}
+        ${credits ? `<tr><td>Credits / discounts</td><td class="num">${pm(-credits)}</td></tr>` : ''}
         <tr><td>Payments received</td><td class="num">${pm(received)}</td></tr>
         <tr class="pd-due"><td>${owed <= 0 ? 'Balance' : 'Balance due'}</td><td class="num">${pm(Math.max(0, owed))}</td></tr>
       </table>
@@ -784,15 +849,16 @@ async function printReceipt(paymentId) {
   const idx = payments.findIndex(p => p.id === pay.id);
   const paidThrough = payments.slice(0, idx + 1).reduce((s, p) => s + Number(p.amount), 0);
   const balanceAfter = Number(c.contract_price) - paidThrough;
-  const isRefund = Number(pay.amount) < 0;
+  const isRefund = pay.type === 'refund';
+  const isCredit = pay.type === 'credit';
 
   const html = `
     <div class="pd pd-receipt">
-      ${docHeader(isRefund ? 'Refund receipt' : 'Payment receipt', receiptNo(pay.id), `<div><span>Invoice</span> ${invoiceNo(c.id)}</div>`)}
+      ${docHeader(isRefund ? 'Refund receipt' : isCredit ? 'Credit memo' : 'Payment receipt', receiptNo(pay.id), `<div><span>Invoice</span> ${invoiceNo(c.id)}</div>`)}
       ${billToBlock(c, pkg)}
 
       <div class="pd-amount">
-        <div class="pd-amount-label">${isRefund ? 'Amount refunded' : 'Amount received'}</div>
+        <div class="pd-amount-label">${isRefund ? 'Amount refunded' : isCredit ? 'Credit applied' : 'Amount received'}</div>
         <div class="pd-amount-value">${pm(Math.abs(Number(pay.amount)))}</div>
       </div>
 
@@ -802,7 +868,7 @@ async function printReceipt(paymentId) {
         <tr><td>Method</td><td class="num">${esc(pay.method || '—')}</td></tr>
         ${pay.note ? `<tr><td>Note</td><td class="num">${esc(pay.note)}</td></tr>` : ''}
         <tr><td>Contract total</td><td class="num">${pm(c.contract_price)}</td></tr>
-        <tr><td>Paid to date (incl. this)</td><td class="num">${pm(paidThrough)}</td></tr>
+        <tr><td>Paid &amp; credited to date (incl. this)</td><td class="num">${pm(paidThrough)}</td></tr>
         <tr class="pd-due"><td>Remaining balance</td><td class="num">${pm(Math.max(0, balanceAfter))}</td></tr>
       </table>
       ${balanceAfter <= 0 ? '<div class="pd-stamp">Paid in full</div>' : ''}
