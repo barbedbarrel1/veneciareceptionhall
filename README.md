@@ -55,6 +55,17 @@ Search each HTML file for `href="#"` in the `.socials` block and paste their rea
 - **Cancellations** are a status change, never a delete — kept deposits stay in collected income and history is preserved.
 - **Convert to client** on an inquiry links the lead to the client record (`converted_client_id`) — this is how you later prove "the website generated $X in bookings."
 
+## Printing (admin)
+- **Invoice**: open a client → 🖨 Invoice (also in the Payments window). Package, included items, full payment history, balance, "Paid in full" stamp when settled. Internal notes are never printed.
+- **Receipt**: 🖨 next to any payment, or "Print receipt" right after adding a payment. Shows the balance *as of that payment*, so reprinting old receipts stays accurate. Has signature lines.
+- **Client list**: Clients tab → 🖨 Print list prints exactly what's filtered on screen, with totals.
+- Choose **Save as PDF** in the print dialog to text/email it to the client. Invoice no. = `VEN-` + first 8 of the client id; receipt no. = `R-` + first 8 of the payment id.
+
+## Videos
+- One-time: run `videos_setup.sql` in the Supabase SQL Editor (adds a new `videos` table only).
+- Upload the video to YouTube (Unlisted is fine) → Admin → Settings → Videos → paste the link. Shorts links play in a tall frame automatically.
+- The gallery's ▶ Videos tab appears as soon as one video exists. Only thumbnails load; YouTube's player loads when someone taps play, so the page stays fast no matter how many videos there are.
+
 ## Language toggle
 EN/ES button in the nav swaps every element tagged `data-i18n` using the STRINGS object in `main.js`. Choice is saved in localStorage. To change any wording, edit the STRINGS object — both languages live in one place.
 

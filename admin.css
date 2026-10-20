@@ -211,3 +211,88 @@ th.num { text-align: right; }
   border-radius: 999px; font-size: .85rem; z-index: 80; display: none;
 }
 .toast.show { display: block; }
+
+/* ---------- print buttons (screen) ---------- */
+.pay-right { display: flex; align-items: center; gap: .5rem; }
+.receipt-btn {
+  background: none; border: 1px solid #e0d9c8; border-radius: 6px;
+  font-size: .8rem; line-height: 1; padding: .25rem .4rem; opacity: .75;
+}
+.receipt-btn:hover { opacity: 1; border-color: var(--teal); }
+
+/* ---------- videos admin ---------- */
+.video-form { display: grid; grid-template-columns: 2fr 1.4fr 1fr auto; gap: .8rem; align-items: end; }
+.video-form label { display: block; font-size: .68rem; letter-spacing: .15em; text-transform: uppercase; color: var(--grey); margin-bottom: .3rem; }
+.video-form input, .video-form select {
+  width: 100%; padding: .5rem .6rem; border: 1px solid #e0d9c8; border-radius: 8px;
+  font-family: var(--font-body); font-size: .88rem; background: var(--white);
+}
+@media (max-width: 760px) { .video-form { grid-template-columns: 1fr; } }
+.video-admin-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.video-admin-grid .g-thumb { aspect-ratio: 16 / 9; }
+.v-admin-title {
+  position: absolute; top: 6px; left: 6px; right: 64px; color: #fff; font-size: .7rem;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------- printable documents ----------
+   #printArea is invisible on screen. When body.printing is set (by printDoc
+   in admin.js), print mode shows ONLY #printArea — the admin UI, modal and
+   toast are all hidden, so the paper gets a clean invoice. */
+#printArea { display: none; }
+
+@media print {
+  @page { size: letter; margin: .55in; }
+  body.printing { background: #fff; }
+  body.printing > *:not(#printArea) { display: none !important; }
+  body.printing #printArea { display: block; }
+  /* keep the teal/gold accents when printing (browsers strip colors by default) */
+  #printArea { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
+.pd { color: #12100e; font-family: var(--font-body); font-weight: 400; font-size: 10.5pt; line-height: 1.45; position: relative; }
+.pd-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid var(--gold); padding-bottom: 14pt; margin-bottom: 16pt; }
+.pd-logo { font-family: var(--font-script); font-size: 30pt; color: var(--teal-deep); line-height: 1; }
+.pd-biz { font-size: 8.5pt; color: #555; margin-top: 4pt; }
+.pd-meta { text-align: right; font-size: 9.5pt; }
+.pd-meta span { color: #777; text-transform: uppercase; letter-spacing: .1em; font-size: 7.5pt; margin-right: 4pt; }
+.pd-kind { font-family: var(--font-display); font-size: 22pt; font-weight: 600; color: var(--teal-deep); letter-spacing: .04em; margin-bottom: 4pt; }
+
+.pd-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 20pt; margin-bottom: 16pt; }
+.pd h4 { font-size: 7.5pt; letter-spacing: .18em; text-transform: uppercase; color: var(--teal); font-weight: 500; margin-bottom: 4pt; }
+.pd-section { margin: 16pt 0 6pt; }
+
+.pd-table { width: 100%; border-collapse: collapse; }
+.pd-table th { text-align: left; font-size: 7.5pt; letter-spacing: .12em; text-transform: uppercase; color: #fff; background: var(--teal-deep); padding: 5pt 7pt; font-weight: 500; }
+.pd-table td { padding: 7pt; border-bottom: 1px solid #e7e2d6; vertical-align: top; }
+.pd-table .num { text-align: right; white-space: nowrap; }
+.pd-table tfoot td { font-weight: 600; border-top: 2px solid var(--teal-deep); border-bottom: none; }
+.pd-compact td { padding: 4pt 7pt; font-size: 9.5pt; }
+.pd-table tr { break-inside: avoid; }
+.pd-sub { font-size: 8.5pt; color: #777; }
+.pd-items { columns: 2; column-gap: 18pt; margin: 6pt 0 0 14pt; font-size: 8.5pt; color: #444; }
+.pd-items li { break-inside: avoid; margin-bottom: 1pt; }
+.pd-muted { color: #777; font-size: 9.5pt; }
+
+.pd-totals { margin: 14pt 0 0 auto; border-collapse: collapse; min-width: 52%; }
+.pd-totals td { padding: 4pt 7pt; }
+.pd-totals .num { text-align: right; white-space: nowrap; }
+.pd-totals .pd-due td { border-top: 2px solid var(--gold); font-weight: 600; font-size: 12.5pt; color: var(--teal-deep); padding-top: 6pt; }
+.pd-totals-wide { min-width: 100%; }
+.pd-totals-wide td { border-bottom: 1px dashed #e7e2d6; }
+
+.pd-stamp {
+  position: absolute; right: 8pt; top: 150pt; transform: rotate(-12deg);
+  border: 2.5pt solid var(--green); color: var(--green); border-radius: 6pt;
+  padding: 3pt 10pt; font-size: 15pt; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; opacity: .8;
+}
+
+.pd-amount { text-align: center; background: var(--teal-soft); border: 1px solid rgba(198,162,78,.5); border-radius: 8pt; padding: 12pt; margin: 6pt 0 10pt; }
+.pd-amount-label { font-size: 7.5pt; letter-spacing: .18em; text-transform: uppercase; color: var(--teal); }
+.pd-amount-value { font-family: var(--font-display); font-size: 28pt; font-weight: 600; color: var(--teal-deep); }
+
+.pd-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 30pt; margin-top: 34pt; font-size: 8pt; color: #777; text-transform: uppercase; letter-spacing: .12em; }
+.pd-sign span { display: block; border-bottom: 1px solid #999; height: 24pt; margin-bottom: 4pt; }
+
+.pd-foot { margin-top: 26pt; text-align: center; font-size: 8.5pt; color: #666; border-top: 1px solid #e7e2d6; padding-top: 10pt; }
+.pd-script { font-family: var(--font-script); font-size: 20pt; color: var(--gold); line-height: 1.1; }

@@ -28,7 +28,7 @@ const STRINGS = {
     evs_private: 'Birthdays, anniversaries & more',
     gallery_eyebrow: 'The venue', gallery_title: 'Inside Venecia',
     gallery_sub: 'Uplighting, elegant table settings and room for up to 300 of your favorite people.',
-    gallery_cta: 'View full gallery',
+    gallery_cta: 'View full gallery', gal_videos: 'Videos', gal_play: 'Play video',
     gcap_ballroom: 'The Ballroom', gcap_tables: 'Table Settings',
     gcap_decor: 'Decor & Details', gcap_celebrations: 'Celebrations',
     pkg_eyebrow: 'Packages', pkg_title: 'Packages for every budget',
@@ -70,7 +70,7 @@ const STRINGS = {
     evs_private: 'Cumplea\u00f1os, aniversarios y m\u00e1s',
     gallery_eyebrow: 'El sal\u00f3n', gallery_title: 'Dentro de Venecia',
     gallery_sub: 'Iluminaci\u00f3n elegante, mesas hermosas y espacio para 300 de tus personas favoritas.',
-    gallery_cta: 'Ver galer\u00eda completa',
+    gallery_cta: 'Ver galer\u00eda completa', gal_videos: 'Videos', gal_play: 'Ver video',
     gcap_ballroom: 'El Sal\u00f3n', gcap_tables: 'Mesas y Montaje',
     gcap_decor: 'Decoraci\u00f3n y Detalles', gcap_celebrations: 'Celebraciones',
     pkg_eyebrow: 'Paquetes', pkg_title: 'Paquetes para cada presupuesto',
@@ -199,26 +199,103 @@ const PLACEHOLDER_TILES = [
 ];
 
 let galleryItems = [];
+let videoItems = [];
 
 async function loadGallery() {
   const target = document.getElementById('galleryGrid');
   if (!target) return;
+  const videoGrid = document.getElementById('videoGrid'); // only exists on gallery.html
 
   if (db) {
-    const { data, error } = await db.from('gallery')
-      .select('*').eq('active', true).order('sort_order');
-    if (!error && data && data.length) galleryItems = data;
+    // photos + videos requested at the same time, not one after the other.
+    // The videos query is a few hundred bytes of JSON — no effect on load speed.
+    const [photos, videos] = await Promise.all([
+      db.from('gallery').select('*').eq('active', true).order('sort_order'),
+      videoGrid
+        ? db.from('videos').select('id,youtube_id,title,category,is_vertical')
+            .eq('active', true).order('sort_order').order('created_at', { ascending: false })
+        : Promise.resolve({ data: null })
+    ]);
+    if (!photos.error && photos.data && photos.data.length) galleryItems = photos.data;
+    // if the videos table doesn't exist yet this just errors quietly and the tab stays hidden
+    if (videos && !videos.error && videos.data) videoItems = videos.data;
   }
   renderGallery('all');
+
+  const videoBtn = document.querySelector('.filter-btn[data-filter="videos"]');
+  if (videoBtn && videoItems.length) videoBtn.hidden = false;
 
   document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      renderGallery(btn.dataset.filter);
+      const showVideos = btn.dataset.filter === 'videos';
+      target.hidden = showVideos;
+      if (videoGrid) videoGrid.hidden = !showVideos;
+      if (showVideos) renderVideos(); else renderGallery(btn.dataset.filter);
     });
   });
 }
+
+/* ---------------- videos ----------------
+   Performance plan: the grid shows only YouTube's thumbnail JPEGs
+   (~15 KB each, lazy-loaded). YouTube's player (~1 MB of JS) is NOT
+   loaded until a visitor taps a video, and it's removed on close.
+   So the gallery page costs the same whether there are 2 videos or 50. */
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderVideos() {
+  const grid = document.getElementById('videoGrid');
+  if (!grid || grid.dataset.rendered) return; // render once — the list doesn't change mid-visit
+  const t = STRINGS[lang];
+  grid.innerHTML = videoItems.map(v => `
+    <button class="v-item" type="button" data-yt="${v.youtube_id}" data-vertical="${v.is_vertical ? 1 : 0}"
+      aria-label="${escHtml(t.gal_play + (v.title ? ': ' + v.title : ''))}">
+      <img src="https://i.ytimg.com/vi/${v.youtube_id}/hqdefault.jpg" alt="${escHtml(v.title || 'Venecia Reception Hall event video')}"
+        loading="lazy" decoding="async" width="480" height="360">
+      <span class="v-play" aria-hidden="true"></span>
+      ${v.title ? `<span class="v-title">${escHtml(v.title)}</span>` : ''}
+    </button>`).join('');
+  grid.dataset.rendered = '1';
+
+  grid.querySelectorAll('.v-item').forEach(btn =>
+    btn.addEventListener('click', () => openVideo(btn.dataset.yt, btn.dataset.vertical === '1')));
+}
+
+function openVideo(id, vertical) {
+  const lb = document.getElementById('videoLightbox');
+  const frame = document.getElementById('videoFrame');
+  if (!/^[\w-]{11}$/.test(id)) return; // belt-and-braces: only ever a real YouTube id in the src
+  frame.classList.toggle('vertical', vertical);
+  // youtube-nocookie = privacy-enhanced mode (no tracking cookies until play)
+  frame.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1&modestbranding=1"
+    title="Venecia Reception Hall video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+  lb.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  lb.querySelector('.lightbox-close').focus();
+}
+
+function closeVideo() {
+  const lb = document.getElementById('videoLightbox');
+  if (!lb || !lb.classList.contains('open')) return;
+  lb.classList.remove('open');
+  document.getElementById('videoFrame').innerHTML = ''; // kills playback + frees memory
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('click', e => {
+  const lb = document.getElementById('videoLightbox');
+  if (lb && (e.target === lb || (lb.contains(e.target) && e.target.classList.contains('lightbox-close')))) closeVideo();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeVideo();
+    const photoLb = document.getElementById('lightbox');
+    if (photoLb) photoLb.classList.remove('open');
+  }
+});
 
 function renderGallery(filter) {
   const target = document.getElementById('galleryGrid');
@@ -231,7 +308,8 @@ function renderGallery(filter) {
       ? galleryItems.filter((g, i, arr) => arr.findIndex(x => x.image_url === g.image_url) === i)
       : galleryItems.filter(g => g.category === filter);
     target.innerHTML = items.map(g =>
-      `<div class="g-item"><img src="${g.image_url}" alt="${g.alt_text || 'Venecia Reception Hall event'}"></div>`).join('');
+      // lazy + async decode: photos below the fold don't download until scrolled to
+      `<div class="g-item"><img src="${g.image_url}" alt="${g.alt_text || 'Venecia Reception Hall event'}" loading="lazy" decoding="async"></div>`).join('');
   } else {
     const items = filter === 'all' ? PLACEHOLDER_TILES : PLACEHOLDER_TILES.filter(g => g.category === filter);
     target.innerHTML = items.map(g => `<div class="g-item"><div class="ph">${g.label}</div></div>`).join('');

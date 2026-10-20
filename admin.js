@@ -66,7 +66,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'dashboard') loadDashboard();
     if (tab.dataset.view === 'clients') loadClients();
     if (tab.dataset.view === 'inquiries') loadInquiries();
-    if (tab.dataset.view === 'settings') { loadPackagesAdmin(); loadGalleryAdmin(); }
+    if (tab.dataset.view === 'settings') { loadPackagesAdmin(); loadGalleryAdmin(); loadVideosAdmin(); }
   });
 });
 
@@ -273,6 +273,7 @@ async function openClientForm(client, isEdit) {
       </div>` : ''}
       <div class="modal-actions">
         ${isEdit ? '<button type="button" class="btn btn-outline btn-sm" id="viewPaymentsBtn">Payments</button>' : ''}
+        ${isEdit ? '<button type="button" class="btn btn-outline btn-sm" id="printInvoiceBtn">🖨 Invoice</button>' : ''}
         <button type="button" class="btn btn-outline" id="modalCancel">Cancel</button>
         <button type="submit" class="btn btn-teal">${isEdit ? 'Save changes' : 'Add client'}</button>
       </div>
@@ -288,7 +289,10 @@ async function openClientForm(client, isEdit) {
     if (pkg) form.contract_price.value = pkg.base_price;
   });
 
-  if (isEdit) document.getElementById('viewPaymentsBtn').addEventListener('click', () => openPayments(client));
+  if (isEdit) {
+    document.getElementById('viewPaymentsBtn').addEventListener('click', () => openPayments(client));
+    document.getElementById('printInvoiceBtn').addEventListener('click', () => printInvoice(client.id));
+  }
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -350,8 +354,14 @@ async function openPayments(client) {
       ${(pays || []).length ? pays.map(p => `
         <div class="pay-row">
           <span>${p.type}${p.method ? ' · ' + p.method : ''}${p.note ? ' · ' + p.note : ''}<div class="meta">${fmtDate(p.paid_at)}</div></span>
-          <span class="${Number(p.amount) < 0 ? 'neg' : ''}">${money(p.amount)}</span>
+          <span class="pay-right">
+            <span class="${Number(p.amount) < 0 ? 'neg' : ''}">${money(p.amount)}</span>
+            <button type="button" class="receipt-btn" data-receipt="${p.id}" title="Print receipt" aria-label="Print receipt for this payment">🖨</button>
+          </span>
         </div>`).join('') : '<p class="empty">No payments yet.</p>'}
+    </div>
+    <div style="text-align:right;margin-top:.7rem">
+      <button type="button" class="btn btn-outline btn-sm" id="printInvoiceBtn2">🖨 Print full invoice</button>
     </div>
     <form id="paymentForm" style="margin-top:1.2rem;border-top:1px solid #eee8db;padding-top:1rem">
       <div class="row2">
@@ -377,9 +387,15 @@ async function openPayments(client) {
     </form>
   `);
 
+  document.getElementById('printInvoiceBtn2').addEventListener('click', () => printInvoice(client.id));
+  document.querySelectorAll('[data-receipt]').forEach(btn =>
+    btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
+
   document.getElementById('paymentForm').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
+    const submitBtn = f.querySelector('button[type=submit]');
+    submitBtn.disabled = true; // stops a double-click from recording the payment twice
     const payload = {
       client_id: client.id,
       amount: parseFloat(f.amount.value),
@@ -388,12 +404,25 @@ async function openPayments(client) {
       note: f.note.value.trim() || null,
       paid_at: f.paid_at.value
     };
-    const { error } = await db.from('payments').insert(payload);
-    if (error) { toast('Could not add payment.'); return; }
+    // .select('id') returns the new row's id so the receipt can be printed right away
+    const { data: saved, error } = await db.from('payments').insert(payload).select('id').single();
+    if (error) { submitBtn.disabled = false; toast('Could not add payment.'); return; }
     toast('Payment added.');
-    closeModal();
     loadClients();
     loadDashboard();
+
+    // right after taking money is when a receipt is needed — offer it on the spot
+    openModal(`
+      <h3>Payment recorded</h3>
+      <p style="font-size:.95rem">${money(payload.amount)} from ${esc(client.name)} was saved.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="modalCancel">Done</button>
+        <button type="button" class="btn btn-outline" id="afterPayInvoice">🖨 Full invoice</button>
+        <button type="button" class="btn btn-teal" id="afterPayReceipt">🖨 Print receipt</button>
+      </div>
+    `);
+    document.getElementById('afterPayReceipt').addEventListener('click', () => printReceipt(saved.id));
+    document.getElementById('afterPayInvoice').addEventListener('click', () => printInvoice(client.id));
   });
 }
 
@@ -590,3 +619,316 @@ async function deleteGalleryItem(item) {
   toast('Photo deleted.');
   loadGalleryAdmin();
 }
+
+/* ---------------- printing: invoices, receipts, client list ----------------
+   How it works: we build a clean document into the hidden #printArea,
+   add body.printing (admin.css hides everything else in print), call
+   window.print(), and clean up on 'afterprint'. No popup window, so
+   pop-up blockers can't stop it, and "Save as PDF" in the print dialog
+   gives the client a PDF to text or email. Read-only: nothing is written. */
+const BUSINESS = {
+  name: 'Venecia Reception Hall',
+  address: '243 S Mesa Dr · Mesa, AZ 85210',
+  phones: '480-206-8626 · 480-827-1950',
+  email: 'info@veneciareceptionhall.com'
+};
+
+// client names/notes are typed by people — escape before putting them in HTML
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// stable, human-friendly numbers derived from the row id — no new DB column needed
+const invoiceNo = id => 'VEN-' + id.slice(0, 8).toUpperCase();
+const receiptNo = id => 'R-' + id.slice(0, 8).toUpperCase();
+const todayLong = () => new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+// printed docs show -$300.00 instead of $-300.00
+const pm = n => (Number(n) < 0 ? '-' : '') + money(Math.abs(Number(n || 0)));
+const PAY_LABELS = { deposit: 'Deposit', payment: 'Payment', credit: 'Credit', refund: 'Refund' };
+
+function printDoc(html, title) {
+  const area = document.getElementById('printArea');
+  area.innerHTML = html;
+  document.body.classList.add('printing');
+  // the browser uses document.title as the default PDF filename
+  const oldTitle = document.title;
+  if (title) document.title = title;
+  const done = () => {
+    document.body.classList.remove('printing');
+    area.innerHTML = '';
+    document.title = oldTitle;
+    window.removeEventListener('afterprint', done);
+  };
+  window.addEventListener('afterprint', done);
+  // one frame so the browser lays out the new content before the dialog opens
+  requestAnimationFrame(() => setTimeout(() => window.print(), 30));
+}
+
+function docHeader(kind, number, extraRight = '') {
+  return `
+    <header class="pd-head">
+      <div>
+        <div class="pd-logo">Venecia</div>
+        <div class="pd-biz">${BUSINESS.name}<br>${BUSINESS.address}<br>${BUSINESS.phones}<br>${BUSINESS.email}</div>
+      </div>
+      <div class="pd-meta">
+        <div class="pd-kind">${kind}</div>
+        ${number ? `<div><span>No.</span> ${number}</div>` : ''}
+        <div><span>Date</span> ${todayLong()}</div>
+        ${extraRight}
+      </div>
+    </header>`;
+}
+
+// everything an invoice needs, fetched in parallel
+async function fetchClientBundle(clientId) {
+  const [cRes, pRes, bRes] = await Promise.all([
+    db.from('clients').select('*').eq('id', clientId).single(),
+    db.from('payments').select('*').eq('client_id', clientId)
+      .order('paid_at', { ascending: true }).order('created_at', { ascending: true }),
+    db.from('client_balances').select('total_paid,balance_owed').eq('id', clientId).single()
+  ]);
+  if (cRes.error || !cRes.data) return null;
+  let pkg = null;
+  if (cRes.data.package_id) {
+    const { data } = await db.from('packages').select('name,description,included_items').eq('id', cRes.data.package_id).single();
+    pkg = data;
+  }
+  return { client: cRes.data, payments: pRes.data || [], bal: bRes.data || { total_paid: 0, balance_owed: cRes.data.contract_price }, pkg };
+}
+
+function billToBlock(c, pkg) {
+  return `
+    <section class="pd-parties">
+      <div>
+        <h4>Bill to</h4>
+        <p><strong>${esc(c.name)}</strong><br>${esc(c.phone)}${c.email ? '<br>' + esc(c.email) : ''}</p>
+      </div>
+      <div>
+        <h4>Event</h4>
+        <p><strong>${eventTypeLabel(c.event_type)}</strong><br>${fmtDate(c.event_date)}${pkg ? '<br>' + esc(pkg.name) : ''}</p>
+      </div>
+    </section>`;
+}
+
+async function printInvoice(clientId) {
+  toast('Preparing invoice…');
+  const b = await fetchClientBundle(clientId);
+  if (!b) { toast('Could not load this client to print.'); return; }
+  const { client: c, payments, bal, pkg } = b;
+  const owed = Number(bal.balance_owed);
+  const credits = payments.filter(p => p.type === 'credit').reduce((s, p) => s + Number(p.amount), 0);
+  const received = payments.filter(p => p.type !== 'credit').reduce((s, p) => s + Number(p.amount), 0);
+
+  const html = `
+    <div class="pd">
+      ${docHeader('Invoice', invoiceNo(c.id), `<div><span>Status</span> ${owed <= 0 ? 'Paid in full' : 'Balance due'}</div>`)}
+      ${billToBlock(c, pkg)}
+
+      <table class="pd-table">
+        <thead><tr><th>Description</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>
+              <strong>${pkg ? esc(pkg.name) : eventTypeLabel(c.event_type) + ' event package'}</strong>
+              <div class="pd-sub">${eventTypeLabel(c.event_type)} · ${fmtDate(c.event_date)}</div>
+              ${pkg && (pkg.included_items || []).length
+                ? `<ul class="pd-items">${pkg.included_items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+            </td>
+            <td class="num">${pm(c.contract_price)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4 class="pd-section">Payment history</h4>
+      ${payments.length ? `
+      <table class="pd-table pd-compact">
+        <thead><tr><th>Date</th><th>Type</th><th>Method</th><th>Note</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          ${payments.map(p => `
+            <tr>
+              <td>${fmtDate(p.paid_at)}</td>
+              <td>${PAY_LABELS[p.type] || esc(p.type)}</td>
+              <td>${esc(p.method || '—')}</td>
+              <td>${esc(p.note || '')}</td>
+              <td class="num">${pm(p.amount)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>` : '<p class="pd-muted">No payments recorded yet.</p>'}
+
+      <table class="pd-totals">
+        <tr><td>Contract total</td><td class="num">${pm(c.contract_price)}</td></tr>
+        ${credits ? `<tr><td>Credits / adjustments</td><td class="num">${pm(credits)}</td></tr>` : ''}
+        <tr><td>Payments received</td><td class="num">${pm(received)}</td></tr>
+        <tr class="pd-due"><td>${owed <= 0 ? 'Balance' : 'Balance due'}</td><td class="num">${pm(Math.max(0, owed))}</td></tr>
+      </table>
+      ${owed <= 0 ? '<div class="pd-stamp">Paid in full</div>' : ''}
+
+      <footer class="pd-foot">
+        <p class="pd-script">Gracias</p>
+        <p>Thank you for celebrating with Venecia. Questions about this invoice? Call ${BUSINESS.phones.split(' · ')[0]}.</p>
+      </footer>
+    </div>`;
+
+  printDoc(html, `Venecia Invoice ${invoiceNo(c.id)} - ${c.name}`);
+}
+
+async function printReceipt(paymentId) {
+  toast('Preparing receipt…');
+  const { data: pay, error } = await db.from('payments').select('*').eq('id', paymentId).single();
+  if (error || !pay) { toast('Could not load this payment.'); return; }
+  const b = await fetchClientBundle(pay.client_id);
+  if (!b) { toast('Could not load the client for this receipt.'); return; }
+  const { client: c, payments, pkg } = b;
+
+  // balance as of THIS payment (not today's), so reprinting an old receipt stays accurate
+  const idx = payments.findIndex(p => p.id === pay.id);
+  const paidThrough = payments.slice(0, idx + 1).reduce((s, p) => s + Number(p.amount), 0);
+  const balanceAfter = Number(c.contract_price) - paidThrough;
+  const isRefund = Number(pay.amount) < 0;
+
+  const html = `
+    <div class="pd pd-receipt">
+      ${docHeader(isRefund ? 'Refund receipt' : 'Payment receipt', receiptNo(pay.id), `<div><span>Invoice</span> ${invoiceNo(c.id)}</div>`)}
+      ${billToBlock(c, pkg)}
+
+      <div class="pd-amount">
+        <div class="pd-amount-label">${isRefund ? 'Amount refunded' : 'Amount received'}</div>
+        <div class="pd-amount-value">${pm(Math.abs(Number(pay.amount)))}</div>
+      </div>
+
+      <table class="pd-totals pd-totals-wide">
+        <tr><td>Payment date</td><td class="num">${fmtDate(pay.paid_at)}</td></tr>
+        <tr><td>Type</td><td class="num">${PAY_LABELS[pay.type] || esc(pay.type)}</td></tr>
+        <tr><td>Method</td><td class="num">${esc(pay.method || '—')}</td></tr>
+        ${pay.note ? `<tr><td>Note</td><td class="num">${esc(pay.note)}</td></tr>` : ''}
+        <tr><td>Contract total</td><td class="num">${pm(c.contract_price)}</td></tr>
+        <tr><td>Paid to date (incl. this)</td><td class="num">${pm(paidThrough)}</td></tr>
+        <tr class="pd-due"><td>Remaining balance</td><td class="num">${pm(Math.max(0, balanceAfter))}</td></tr>
+      </table>
+      ${balanceAfter <= 0 ? '<div class="pd-stamp">Paid in full</div>' : ''}
+
+      <div class="pd-sign">
+        <div><span></span>Received by</div>
+        <div><span></span>Client signature</div>
+      </div>
+
+      <footer class="pd-foot">
+        <p class="pd-script">Gracias</p>
+        <p>Please keep this receipt for your records.</p>
+      </footer>
+    </div>`;
+
+  printDoc(html, `Venecia Receipt ${receiptNo(pay.id)} - ${c.name}`);
+}
+
+// prints exactly what the Clients tab is showing (same search + status filter)
+function printClientList() {
+  const search = document.getElementById('clientSearch').value.trim().toLowerCase();
+  const statusFilter = document.getElementById('clientStatusFilter').value;
+  let rows = allClients;
+  if (statusFilter !== 'all') rows = rows.filter(r => r.status === statusFilter);
+  if (search) rows = rows.filter(r => r.name.toLowerCase().includes(search) || (r.phone || '').includes(search));
+  if (!rows.length) { toast('Nothing to print — the list is empty.'); return; }
+
+  const sum = key => rows.reduce((s, r) => s + Number(r[key] || 0), 0);
+  const filterLabel = document.getElementById('clientStatusFilter').selectedOptions[0].textContent;
+
+  const html = `
+    <div class="pd pd-list">
+      ${docHeader('Client list', '', `<div><span>Showing</span> ${esc(filterLabel)}${search ? ' · “' + esc(search) + '”' : ''}</div>`)}
+      <table class="pd-table pd-compact">
+        <thead><tr><th>Client</th><th>Phone</th><th>Event</th><th>Date</th><th class="num">Contract</th><th class="num">Paid</th><th class="num">Owes</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td>${esc(r.name)}</td><td>${esc(r.phone)}</td><td>${eventTypeLabel(r.event_type)}</td>
+              <td>${fmtDate(r.event_date)}</td><td class="num">${pm(r.contract_price)}</td>
+              <td class="num">${pm(r.total_paid)}</td><td class="num">${pm(r.balance_owed)}</td>
+            </tr>`).join('')}
+        </tbody>
+        <tfoot>
+          <tr><td colspan="4">${rows.length} client${rows.length === 1 ? '' : 's'}</td>
+            <td class="num">${pm(sum('contract_price'))}</td><td class="num">${pm(sum('total_paid'))}</td><td class="num">${pm(sum('balance_owed'))}</td></tr>
+        </tfoot>
+      </table>
+    </div>`;
+
+  printDoc(html, 'Venecia Client List');
+}
+document.getElementById('printClientsBtn').addEventListener('click', printClientList);
+
+/* ---------------- settings: videos ----------------
+   Videos live on YouTube, not in Supabase Storage. Why:
+   - Supabase free tier has 1 GB storage and caps bandwidth; a few event
+     videos watched a few hundred times would blow through it.
+   - YouTube re-encodes for every screen + connection speed for free.
+   We only store the 11-character video ID. The site shows a lightweight
+   thumbnail and only loads YouTube's player when someone taps play. */
+function parseYouTubeId(input) {
+  const s = (input || '').trim();
+  if (/^[\w-]{11}$/.test(s)) return { id: s, vertical: false };
+  try {
+    const u = new URL(s);
+    const host = u.hostname.replace(/^www\.|^m\./, '');
+    let id = null;
+    if (host === 'youtu.be') id = u.pathname.slice(1, 12);
+    else if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      id = u.searchParams.get('v');
+      if (!id) {
+        const m = u.pathname.match(/\/(shorts|embed|live|v)\/([\w-]{11})/);
+        if (m) id = m[2];
+      }
+    }
+    if (id && /^[\w-]{11}$/.test(id)) return { id, vertical: /\/shorts\//.test(u.pathname) };
+  } catch (e) { /* not a URL */ }
+  return null;
+}
+
+const VIDEO_CAT_LABELS = { weddings: 'Weddings', quinceaneras: 'Quinceañeras', sweet16: 'Sweet 16', venue: 'The venue', other: 'Other' };
+
+async function loadVideosAdmin() {
+  const grid = document.getElementById('videoAdminGrid');
+  const { data, error } = await db.from('videos').select('*').order('sort_order').order('created_at', { ascending: false });
+  if (error) {
+    // table not created yet — explain instead of failing silently
+    grid.innerHTML = '<p class="empty" style="grid-column:1/-1">Videos aren\'t set up in the database yet (run videos_setup.sql once).</p>';
+    return;
+  }
+  grid.innerHTML = (data || []).length ? data.map(v => `
+    <div class="g-thumb" data-id="${v.id}">
+      <img src="https://i.ytimg.com/vi/${v.youtube_id}/mqdefault.jpg" alt="${esc(v.title || 'Video')}" loading="lazy">
+      <span class="cat">${VIDEO_CAT_LABELS[v.category] || v.category}${v.is_vertical ? ' · Short' : ''}</span>
+      <button class="del" data-action="delete">Delete</button>
+      ${v.title ? `<span class="v-admin-title">${esc(v.title)}</span>` : ''}
+    </div>`).join('') : '<p class="empty" style="grid-column:1/-1">No videos yet.</p>';
+
+  grid.querySelectorAll('.g-thumb').forEach(thumb => {
+    const v = data.find(x => x.id === thumb.dataset.id);
+    thumb.querySelector('.del').addEventListener('click', async () => {
+      if (!confirm('Remove this video from the website? (It stays on YouTube.)')) return;
+      const { error: delErr } = await db.from('videos').delete().eq('id', v.id);
+      if (delErr) { toast('Could not delete video.'); return; }
+      toast('Video removed.');
+      loadVideosAdmin();
+    });
+  });
+}
+
+document.getElementById('videoForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const parsed = parseYouTubeId(document.getElementById('videoUrl').value);
+  if (!parsed) { toast("That doesn't look like a YouTube link."); return; }
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const { error } = await db.from('videos').insert({
+    youtube_id: parsed.id,
+    is_vertical: parsed.vertical,
+    title: document.getElementById('videoTitle').value.trim() || null,
+    category: document.getElementById('videoCategory').value
+  });
+  btn.disabled = false;
+  if (error) { toast('Could not add video — ' + error.message); return; }
+  toast('Video added to the website.');
+  e.target.reset();
+  loadVideosAdmin();
+});

@@ -52,8 +52,11 @@
         <button class="filter-btn" data-filter="sweet16" data-i18n="ev_sweet16">Sweet 16</button>
         <button class="filter-btn" data-filter="other">Other</button>
         <button class="filter-btn" data-filter="venue" data-i18n="nav_about">The Venue</button>
+        <!-- stays hidden until at least one video exists, so visitors never see an empty tab -->
+        <button class="filter-btn filter-videos" data-filter="videos" hidden><span aria-hidden="true">▶</span> <span data-i18n="gal_videos">Videos</span></button>
       </div>
       <div class="gallery-grid" id="galleryGrid"></div>
+      <div class="video-grid" id="videoGrid" hidden></div>
     </div>
   </section>
 
@@ -67,6 +70,13 @@
   <div class="lightbox" id="lightbox">
     <button class="lightbox-close" aria-label="Close">×</button>
     <img src="" alt="Venecia Reception Hall">
+  </div>
+
+  <!-- video player: the YouTube iframe is only created when a video is tapped,
+       and destroyed on close (stops audio + frees memory) -->
+  <div class="lightbox video-lightbox" id="videoLightbox" role="dialog" aria-modal="true" aria-label="Video player">
+    <button class="lightbox-close" aria-label="Close video">×</button>
+    <div class="video-frame" id="videoFrame"></div>
   </div>
 
   <footer>
