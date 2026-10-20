@@ -79,8 +79,11 @@ function toast(msg) {
   toast._t = setTimeout(() => el.classList.remove('show'), 2600);
 }
 
-function openModal(html) {
-  document.getElementById('modalContent').innerHTML = html;
+function openModal(html, opts = {}) {
+  const content = document.getElementById('modalContent');
+  content.classList.toggle('wide', !!opts.wide); // the invoice page needs more room
+  content.innerHTML = html;
+  document.getElementById('modalBg').scrollTop = 0;
   document.getElementById('modalBg').classList.add('open');
   const cancel = document.getElementById('modalCancel');
   if (cancel) cancel.addEventListener('click', closeModal);
@@ -91,6 +94,9 @@ function closeModal() {
 }
 document.getElementById('modalBg').addEventListener('click', e => {
   if (e.target.id === 'modalBg') closeModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !document.body.classList.contains('printing')) closeModal();
 });
 
 /* ---------------- formatting helpers ---------------- */
@@ -178,6 +184,13 @@ async function loadDashboard() {
   document.getElementById('statProjected').textContent = money(projected);
   document.getElementById('statOutstanding').textContent = money(outstanding);
 
+  // refund counter: money handed back this year (refunds are stored negative,
+  // and they're ALREADY subtracted from the collected totals above)
+  const refundedYear = (payments || [])
+    .filter(p => p.type === 'refund' && paidDate(p) >= yearStart)
+    .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+  document.getElementById('statRefunded').textContent = money(refundedYear);
+
   const CAPACITY = 20;
   const bookedThisMonth = active.filter(r => {
     if (!r.event_date) return false;
@@ -195,8 +208,8 @@ async function loadDashboard() {
 
   document.getElementById('attnList').innerHTML = soon.length
     ? soon.map(r => `
-      <div class="card attn-item ${r.daysAway <= 7 ? 'urgent' : ''}">
-        <div><div class="who">${r.name}</div><div class="when">${fmtDate(r.event_date)} · ${r.daysAway}d away</div></div>
+      <div class="card attn-item clickable ${r.daysAway <= 7 ? 'urgent' : ''}" data-client="${r.id}" role="button" tabindex="0">
+        <div><div class="who">${esc(r.name)}</div><div class="when">${fmtDate(r.event_date)} · ${r.daysAway}d away</div></div>
         <div class="owes">${money(r.balance_owed)}<div class="of">owed</div></div>
       </div>`).join('')
     : '<div class="card empty">Nothing needs attention right now.</div>';
@@ -208,12 +221,25 @@ async function loadDashboard() {
 
   document.getElementById('upcomingList').innerHTML = upcoming.length
     ? upcoming.map(r => `
-      <div class="upcoming-row">
+      <div class="upcoming-row clickable" data-client="${r.id}" role="button" tabindex="0">
         <span class="date">${fmtDate(r.event_date)}</span>
-        <span>${r.name} — ${eventTypeLabel(r.event_type)}</span>
+        <span>${esc(r.name)} — ${eventTypeLabel(r.event_type)}</span>
         ${balancePill(r)}
       </div>`).join('')
     : '<div class="empty">No upcoming events.</div>';
+
+  bindClientOpeners(document.getElementById('view-dashboard'));
+}
+
+// anything with data-client="<id>" opens that client's invoice page —
+// by click, or Enter/Space for keyboard users
+function bindClientOpeners(root) {
+  root.querySelectorAll('[data-client]').forEach(el => {
+    el.addEventListener('click', () => openClientView(el.dataset.client));
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openClientView(el.dataset.client); }
+    });
+  });
 }
 
 /* ---------------- clients + payments ---------------- */
@@ -249,30 +275,77 @@ function renderClients() {
       <td>${clientStatusPill(r.status)}</td>
     </tr>`).join('');
 
-  tbody.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => openClientDetail(tr.dataset.id)));
+  tbody.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => openClientView(tr.dataset.id)));
 }
 
 document.getElementById('clientSearch').addEventListener('input', renderClients);
 document.getElementById('clientStatusFilter').addEventListener('change', renderClients);
 document.getElementById('newClientBtn').addEventListener('click', () => openClientForm(null, false));
 
-async function openClientDetail(id) {
-  const { data: client, error } = await db.from('clients').select('*').eq('id', id).single();
-  if (error || !client) { toast('Could not load client.'); return; }
-  openClientForm(client, true);
+/* ---------------- client page (invoice view) ----------------
+   One screen per client, like Zoho: the invoice itself in the middle,
+   big buttons on top (Print · Add payment · Refund · Edit invoice),
+   and a receipt button on every payment line. Opens from the client
+   list, "Needs attention" and "Upcoming events". */
+async function openClientView(id) {
+  const b = await fetchClientBundle(id);
+  if (!b) { toast('Could not load this client.'); return; }
+  const { client: c } = b;
+  const t = invoiceTotals(b);
+
+  const balanceTile = t.owed > 0
+    ? `<div class="cv-tile due"><div class="label">Balance due</div><div class="value">${money(t.owed)}</div></div>`
+    : t.owed < 0
+      ? `<div class="cv-tile over"><div class="label">Owed back to client</div><div class="value">${money(-t.owed)}</div></div>`
+      : `<div class="cv-tile paid"><div class="label">Balance</div><div class="value">Paid in full</div></div>`;
+
+  openModal(`
+    <div class="cv">
+      <div class="cv-top">
+        <div>
+          <h3 class="cv-name">${esc(c.name)}</h3>
+          <div class="cv-sub">${eventTypeLabel(c.event_type)} · ${fmtDate(c.event_date)} · <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a> ${clientStatusPill(c.status)}</div>
+        </div>
+        <button type="button" class="cv-close" id="modalCancel" aria-label="Close">×</button>
+      </div>
+
+      <div class="cv-actions">
+        <button type="button" class="btn btn-teal cv-btn" id="cvPrint">🖨 Print invoice</button>
+        <button type="button" class="btn btn-gold cv-btn" id="cvPay">＋ Add payment</button>
+        <button type="button" class="btn btn-outline cv-btn" id="cvRefund">↩ Refund</button>
+        <button type="button" class="btn btn-outline cv-btn" id="cvEdit">✎ Edit invoice</button>
+      </div>
+
+      <div class="cv-tiles">
+        <div class="cv-tile"><div class="label">Contract</div><div class="value">${money(c.contract_price)}</div></div>
+        <div class="cv-tile"><div class="label">Paid</div><div class="value">${money(t.netPaid)}</div></div>
+        ${balanceTile}
+        ${t.refunds ? `<div class="cv-tile refund"><div class="label">Refunded</div><div class="value">${money(t.refunds)}</div></div>` : ''}
+      </div>
+
+      <div class="cv-paper">${buildInvoiceHtml(b, { onScreen: true })}</div>
+    </div>`, { wide: true });
+
+  document.getElementById('cvPrint').addEventListener('click', () => printInvoice(c.id));
+  document.getElementById('cvPay').addEventListener('click', () => openPaymentEntry(c.id, 'payment'));
+  document.getElementById('cvRefund').addEventListener('click', () => openPaymentEntry(c.id, 'refund'));
+  document.getElementById('cvEdit').addEventListener('click', () => openClientForm(c, true));
+  document.querySelectorAll('.cv-paper [data-receipt]').forEach(btn =>
+    btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
 }
 
 async function openClientForm(client, isEdit) {
   const { data: pkgs } = await db.from('packages').select('id,name,base_price').order('sort_order');
 
   openModal(`
-    <h3>${isEdit ? 'Edit client' : 'New client'}</h3>
+    <h3>${isEdit ? 'Edit invoice — ' + esc(client.name) : 'New client'}</h3>
+    ${isEdit ? '<p class="form-tip">To take off a discount or give money back, use <strong>＋ Add payment → Credit</strong> or <strong>↩ Refund</strong> on the invoice page — that keeps the history.</p>' : ''}
     <form id="clientForm">
       <div class="row2">
-        <div class="field"><label>Name</label><input name="name" required value="${client?.name || ''}"></div>
-        <div class="field"><label>Phone</label><input name="phone" required value="${client?.phone || ''}"></div>
+        <div class="field"><label>Name</label><input name="name" required value="${esc(client?.name || '')}"></div>
+        <div class="field"><label>Phone</label><input name="phone" required value="${esc(client?.phone || '')}"></div>
       </div>
-      <div class="field"><label>Email</label><input type="email" name="email" value="${client?.email || ''}"></div>
+      <div class="field"><label>Email</label><input type="email" name="email" value="${esc(client?.email || '')}"></div>
       <div class="row2">
         <div class="field"><label>Event type</label>
           <select name="event_type">
@@ -285,17 +358,17 @@ async function openClientForm(client, isEdit) {
         <div class="field"><label>Package</label>
           <select name="package_id">
             <option value="">— none —</option>
-            ${(pkgs || []).map(p => `<option value="${p.id}" ${client?.package_id === p.id ? 'selected' : ''}>${p.name} (${money(p.base_price)})</option>`).join('')}
+            ${(pkgs || []).map(p => `<option value="${p.id}" ${client?.package_id === p.id ? 'selected' : ''}>${esc(p.name)} (${money(p.base_price)})</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Contract price</label><input type="number" step="0.01" name="contract_price" required value="${client?.contract_price ?? ''}"></div>
+        <div class="field"><label>Contract price</label><input type="number" step="0.01" min="0.01" inputmode="decimal" name="contract_price" required value="${client?.contract_price ?? ''}"></div>
       </div>
       <div class="field"><label>Status</label>
         <select name="status">
           ${['active', 'completed', 'cancelled'].map(v => `<option value="${v}" ${client?.status === v ? 'selected' : ''}>${v}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Notes</label><textarea name="notes" rows="2">${client?.notes || ''}</textarea></div>
+      <div class="field"><label>Notes (private — never printed)</label><textarea name="notes" rows="2">${esc(client?.notes || '')}</textarea></div>
       ${!isEdit ? `
       <div class="row2">
         <div class="field"><label>Deposit taken today (optional)</label><input type="number" step="0.01" min="0" inputmode="decimal" name="deposit_amount" placeholder="0.00"></div>
@@ -304,15 +377,16 @@ async function openClientForm(client, isEdit) {
         </div>
       </div>` : ''}
       <div class="modal-actions">
-        ${isEdit ? '<button type="button" class="btn btn-outline btn-sm" id="viewPaymentsBtn">Payments</button>' : ''}
-        ${isEdit ? '<button type="button" class="btn btn-outline btn-sm" id="printInvoiceBtn">🖨 Invoice</button>' : ''}
-        <button type="button" class="btn btn-outline" id="modalCancel">Cancel</button>
+        ${isEdit
+          ? '<button type="button" class="btn btn-outline" id="editBack">← Back to invoice</button>'
+          : '<button type="button" class="btn btn-outline" id="modalCancel">Cancel</button>'}
         <button type="submit" class="btn btn-teal">${isEdit ? 'Save changes' : 'Add client'}</button>
       </div>
     </form>
   `);
 
   const form = document.getElementById('clientForm');
+  if (isEdit) document.getElementById('editBack').addEventListener('click', () => openClientView(client.id));
 
   // pre-fill contract price from the chosen package (new clients only)
   form.package_id.addEventListener('change', () => {
@@ -320,11 +394,6 @@ async function openClientForm(client, isEdit) {
     const pkg = (pkgs || []).find(p => p.id === form.package_id.value);
     if (pkg) form.contract_price.value = pkg.base_price;
   });
-
-  if (isEdit) {
-    document.getElementById('viewPaymentsBtn').addEventListener('click', () => openPayments(client));
-    document.getElementById('printInvoiceBtn').addEventListener('click', () => printInvoice(client.id));
-  }
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -335,6 +404,8 @@ async function openClientForm(client, isEdit) {
       if (dep > price && !confirm(`The deposit (${money(dep)}) is more than the contract price (${money(price)}). Save anyway?`)) return;
     } else if (price !== Number(client.contract_price) &&
       !confirm(`Change the contract price from ${money(client.contract_price)} to ${money(price)}? This changes what the client owes.`)) return;
+    const submitBtn = form.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
     const payload = {
       name: form.name.value.trim(),
       phone: form.phone.value.trim(),
@@ -342,18 +413,20 @@ async function openClientForm(client, isEdit) {
       event_type: form.event_type.value,
       event_date: form.event_date.value,
       package_id: form.package_id.value || null,
-      contract_price: parseFloat(form.contract_price.value),
+      contract_price: price,
       status: form.status.value,
       notes: form.notes.value.trim() || null
     };
 
+    let clientId = client?.id;
     if (isEdit) {
       const { error } = await db.from('clients').update(payload).eq('id', client.id);
-      if (error) { toast('Could not save client.'); return; }
+      if (error) { submitBtn.disabled = false; toast('Could not save client.'); return; }
       toast('Client updated.');
     } else {
       const { data: inserted, error } = await db.from('clients').insert(payload).select().single();
-      if (error) { toast('Could not add client.'); return; }
+      if (error) { submitBtn.disabled = false; toast('Could not add client.'); return; }
+      clientId = inserted.id;
 
       const depositAmount = Math.abs(parseFloat(form.deposit_amount?.value || 0));
       if (depositAmount > 0) {
@@ -362,7 +435,8 @@ async function openClientForm(client, isEdit) {
           amount: depositAmount,
           type: 'deposit',
           method: form.deposit_method.value,
-          note: 'Deposit at booking'
+          note: 'Deposit at booking',
+          paid_at: todayISO()
         });
       }
 
@@ -372,122 +446,113 @@ async function openClientForm(client, isEdit) {
       }
       toast('Client added.');
     }
-    closeModal();
     loadClients();
     loadDashboard();
+    openClientView(clientId); // land on their invoice — ready to print
   });
 }
 
-async function openPayments(client) {
-  const { data: pays } = await db.from('payments').select('*').eq('client_id', client.id).order('paid_at', { ascending: false });
-  const { data: balRow } = await db.from('client_balances').select('total_paid,balance_owed').eq('id', client.id).single();
+/* ---------------- add payment / refund ----------------
+   Amount is always typed positive; the Type decides how it counts
+   (see signedAmount). Live before→after preview + typo warnings. */
+async function openPaymentEntry(clientId, presetType) {
+  const b = await fetchClientBundle(clientId);
+  if (!b) { toast('Could not load this client.'); return; }
+  const { client } = b;
+  const t = invoiceTotals(b);
+  const owedNow = t.owed;
+  const paidNow = Number(b.bal.total_paid || 0);
+  const isRefund = presetType === 'refund';
 
   openModal(`
-    <h3>${client.name} — payments</h3>
-    <div class="detail-stats">
-      <div class="card stat"><div class="label">Contract</div><div class="value">${money(client.contract_price)}</div></div>
-      <div class="card stat"><div class="label">Paid</div><div class="value">${money(balRow?.total_paid)}</div></div>
-      <div class="card stat"><div class="label">Owes</div><div class="value warn">${money(balRow?.balance_owed)}</div></div>
-    </div>
-    <div id="payRows">
-      ${(pays || []).length ? pays.map(p => `
-        <div class="pay-row">
-          <span>${p.type}${p.method ? ' · ' + p.method : ''}${p.note ? ' · ' + p.note : ''}<div class="meta">${fmtDate(p.paid_at)}</div></span>
-          <span class="pay-right">
-            <span class="${p.type === 'refund' ? 'neg' : p.type === 'credit' ? 'credit' : ''}">${p.type === 'credit' ? '−' + money(p.amount) + ' off' : money(p.amount)}</span>
-            <button type="button" class="receipt-btn" data-receipt="${p.id}" title="Print receipt" aria-label="Print receipt for this payment">🖨</button>
-          </span>
-        </div>`).join('') : '<p class="empty">No payments yet.</p>'}
-    </div>
-    <div style="text-align:right;margin-top:.7rem">
-      <button type="button" class="btn btn-outline btn-sm" id="printInvoiceBtn2">🖨 Print full invoice</button>
-    </div>
-    <form id="paymentForm" style="margin-top:1.2rem;border-top:1px solid #eee8db;padding-top:1rem">
+    <h3>${isRefund ? 'Refund money to ' : 'Add a payment — '}${esc(client.name)}</h3>
+    <div class="pe-owes">${owedNow > 0 ? `Owes <strong>${money(owedNow)}</strong>` : owedNow < 0 ? `Overpaid by <strong>${money(-owedNow)}</strong>` : '<strong>Paid in full</strong>'} · Paid so far ${money(t.netPaid)}</div>
+    <form id="paymentForm">
+      <div class="field"><label>${isRefund ? 'Amount to give back' : 'Amount'}</label>
+        <input type="number" step="0.01" min="0.01" inputmode="decimal" name="amount" required placeholder="0.00" class="pe-amount" autofocus></div>
       <div class="row2">
-        <div class="field"><label>Amount (always positive)</label><input type="number" step="0.01" min="0.01" inputmode="decimal" name="amount" required placeholder="0.00"></div>
         <div class="field"><label>Type</label>
           <select name="type">
             <option value="deposit">Deposit — money in</option>
-            <option value="payment" selected>Payment — money in</option>
+            <option value="payment" ${!isRefund ? 'selected' : ''}>Payment — money in</option>
             <option value="credit">Credit — discount / item removed</option>
-            <option value="refund">Refund — money given back</option>
+            <option value="refund" ${isRefund ? 'selected' : ''}>Refund — money given back</option>
           </select>
+        </div>
+        <div class="field"><label>Method</label>
+          <select name="method"><option>cash</option><option>zelle</option><option>card</option><option>check</option><option value="">other</option></select>
         </div>
       </div>
       <div class="row2">
-        <div class="field"><label>Method</label><input name="method" placeholder="cash, zelle, card…"></div>
         <div class="field"><label>Date</label><input type="date" name="paid_at" value="${todayISO()}"></div>
+        <div class="field"><label>Note</label><input name="note" placeholder="${isRefund ? 'Reason for the refund' : 'optional'}"></div>
       </div>
-      <div class="field"><label>Note</label><input name="note"></div>
       <div class="pay-preview" id="payPreview" aria-live="polite"></div>
       <div class="modal-actions">
-        <button type="button" class="btn btn-outline" id="modalCancel">Close</button>
-        <button type="submit" class="btn btn-teal">Add payment</button>
+        <button type="button" class="btn btn-outline" id="peBack">← Back to invoice</button>
+        <button type="submit" class="btn btn-teal">${isRefund ? 'Save refund' : 'Save payment'}</button>
       </div>
     </form>
   `);
 
-  document.getElementById('printInvoiceBtn2').addEventListener('click', () => printInvoice(client.id));
-  document.querySelectorAll('[data-receipt]').forEach(btn =>
-    btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
-
+  document.getElementById('peBack').addEventListener('click', () => openClientView(clientId));
   const payForm = document.getElementById('paymentForm');
-  const owedNow = Number(balRow?.balance_owed ?? client.contract_price);
-  const paidNow = Number(balRow?.total_paid ?? 0);
+  const submitBtn = payForm.querySelector('button[type=submit]');
 
   // live "before → after" line: the person entering it sees exactly what the
   // balance will become BEFORE saving — the best defense against typos
   const updatePreview = () => {
+    const type = payForm.type.value;
+    submitBtn.textContent = type === 'refund' ? 'Save refund' : type === 'credit' ? 'Save credit' : 'Save payment';
     const amt = Math.abs(parseFloat(payForm.amount.value));
     const box = document.getElementById('payPreview');
     if (!amt) { box.innerHTML = ''; box.className = 'pay-preview'; return; }
-    const after = owedNow - signedAmount(payForm.type.value, amt);
-    const risky = isSuspicious(payForm.type.value, amt, owedNow, paidNow);
+    const after = owedNow - signedAmount(type, amt);
+    const risky = isSuspicious(type, amt, owedNow, paidNow);
     box.className = 'pay-preview' + (risky ? ' warn' : '');
     box.innerHTML = `Balance: <strong>${money(owedNow)}</strong> → <strong>${money(after)}</strong>` +
       (risky ? `<br>${risky}` : '');
   };
   payForm.amount.addEventListener('input', updatePreview);
   payForm.type.addEventListener('change', updatePreview);
+  updatePreview();
 
   payForm.addEventListener('submit', async e => {
     e.preventDefault();
-    const f = e.target;
-    const submitBtn = f.querySelector('button[type=submit]');
-    const amt = Math.abs(parseFloat(f.amount.value)); // a stray minus sign is ignored
+    const amt = Math.abs(parseFloat(payForm.amount.value)); // a stray minus sign is ignored
     if (!amt) { toast('Enter an amount greater than $0.'); return; }
-    const type = f.type.value;
+    const type = payForm.type.value;
     const risky = isSuspicious(type, amt, owedNow, paidNow);
     if (risky && !confirm(`${risky.replace(/<[^>]+>/g, '')}\n\nSave it anyway?`)) return;
 
-    submitBtn.disabled = true; // stops a double-click from recording the payment twice
+    submitBtn.disabled = true; // stops a double-click from recording it twice
     const payload = {
-      client_id: client.id,
+      client_id: clientId,
       amount: signedAmount(type, amt), // the TYPE decides the sign, never the person typing
       type,
-      method: f.method.value.trim() || null,
-      note: f.note.value.trim() || null,
-      paid_at: f.paid_at.value || todayISO()
+      method: payForm.method.value || null,
+      note: payForm.note.value.trim() || null,
+      paid_at: payForm.paid_at.value || todayISO()
     };
     // .select('id') returns the new row's id so the receipt can be printed right away
     const { data: saved, error } = await db.from('payments').insert(payload).select('id').single();
-    if (error) { submitBtn.disabled = false; toast('Could not add payment — ' + error.message); return; }
-    toast('Payment added.');
+    if (error) { submitBtn.disabled = false; toast('Could not save — ' + error.message); return; }
+    toast(`${PAY_LABELS[type]} saved.`);
     loadClients();
     loadDashboard();
 
-    // right after taking money is when a receipt is needed — offer it on the spot
+    // right after money changes hands is when a receipt is needed — offer it on the spot
     openModal(`
-      <h3>Payment recorded</h3>
-      <p style="font-size:.95rem">${PAY_LABELS[type]} of ${money(amt)} for ${esc(client.name)} was saved. New balance: <strong>${money(owedNow - payload.amount)}</strong>.</p>
+      <h3>${PAY_LABELS[type]} saved ✓</h3>
+      <p style="font-size:1rem">${PAY_LABELS[type]} of <strong>${money(amt)}</strong> for ${esc(client.name)}.<br>
+        New balance: <strong>${money(owedNow - payload.amount)}</strong></p>
       <div class="modal-actions">
-        <button type="button" class="btn btn-outline" id="modalCancel">Done</button>
-        <button type="button" class="btn btn-outline" id="afterPayInvoice">🖨 Full invoice</button>
+        <button type="button" class="btn btn-outline" id="afterPayBack">← Back to invoice</button>
         <button type="button" class="btn btn-teal" id="afterPayReceipt">🖨 Print receipt</button>
       </div>
     `);
     document.getElementById('afterPayReceipt').addEventListener('click', () => printReceipt(saved.id));
-    document.getElementById('afterPayInvoice').addEventListener('click', () => printInvoice(client.id));
+    document.getElementById('afterPayBack').addEventListener('click', () => openClientView(clientId));
   });
 }
 
@@ -775,18 +840,28 @@ function billToBlock(c, pkg) {
     </section>`;
 }
 
-async function printInvoice(clientId) {
-  toast('Preparing invoice…');
-  const b = await fetchClientBundle(clientId);
-  if (!b) { toast('Could not load this client to print.'); return; }
-  const { client: c, payments, bal, pkg } = b;
-  const owed = Number(bal.balance_owed);
-  const credits = payments.filter(p => p.type === 'credit').reduce((s, p) => s + Number(p.amount), 0);
-  const received = payments.filter(p => p.type !== 'credit').reduce((s, p) => s + Number(p.amount), 0);
+// one set of math for the invoice page, the printout and the tiles.
+// Same rule as the client_balances view: balance = contract − sum(amounts)
+function invoiceTotals(b) {
+  const sum = (...types) => b.payments.filter(p => types.includes(p.type)).reduce((s, p) => s + Number(p.amount), 0);
+  const received = sum('deposit', 'payment');   // money that came in
+  const credits = sum('credit');                // discounts (positive rows)
+  const refunds = -sum('refund');               // money handed back (rows are negative → shown positive)
+  return { received, credits, refunds, netPaid: received - refunds, owed: Number(b.bal.balance_owed) };
+}
 
-  const html = `
+// the invoice document — rendered on the client page (onScreen: adds
+// receipt buttons) and sent to the printer (no buttons). Same HTML both ways.
+function buildInvoiceHtml(b, { onScreen = false } = {}) {
+  const { client: c, payments, pkg } = b;
+  const t = invoiceTotals(b);
+  const typeLabel = p => p.type === 'refund' ? 'Refund (to client)' : (PAY_LABELS[p.type] || esc(p.type));
+  const amountCell = p => p.type === 'credit' ? pm(-Number(p.amount)) : pm(p.amount);
+  const statusText = t.owed > 0 ? 'Balance due' : t.owed < 0 ? 'Overpaid' : 'Paid in full';
+
+  return `
     <div class="pd">
-      ${docHeader('Invoice', invoiceNo(c.id), `<div><span>Status</span> ${owed <= 0 ? 'Paid in full' : 'Balance due'}</div>`)}
+      ${docHeader('Invoice', invoiceNo(c.id), `<div><span>Status</span> ${statusText}</div>`)}
       ${billToBlock(c, pkg)}
 
       <table class="pd-table">
@@ -807,34 +882,42 @@ async function printInvoice(clientId) {
       <h4 class="pd-section">Payment history</h4>
       ${payments.length ? `
       <table class="pd-table pd-compact">
-        <thead><tr><th>Date</th><th>Type</th><th>Method</th><th>Note</th><th class="num">Amount</th></tr></thead>
+        <thead><tr><th>Date</th><th>Type</th><th>Method</th><th>Note</th><th class="num">Amount</th>${onScreen ? '<th class="num">Receipt</th>' : ''}</tr></thead>
         <tbody>
           ${payments.map(p => `
-            <tr>
+            <tr class="${p.type === 'refund' ? 'pd-refund' : p.type === 'credit' ? 'pd-credit' : ''}">
               <td>${fmtDate(p.paid_at)}</td>
-              <td>${PAY_LABELS[p.type] || esc(p.type)}</td>
+              <td>${typeLabel(p)}</td>
               <td>${esc(p.method || '—')}</td>
               <td>${esc(p.note || '')}</td>
-              <td class="num">${pm(p.amount)}</td>
+              <td class="num">${amountCell(p)}</td>
+              ${onScreen ? `<td class="num"><button type="button" class="receipt-btn" data-receipt="${p.id}" aria-label="Print receipt for ${fmtDate(p.paid_at)}">🖨 Receipt</button></td>` : ''}
             </tr>`).join('')}
         </tbody>
       </table>` : '<p class="pd-muted">No payments recorded yet.</p>'}
 
       <table class="pd-totals">
         <tr><td>Contract total</td><td class="num">${pm(c.contract_price)}</td></tr>
-        ${credits ? `<tr><td>Credits / discounts</td><td class="num">${pm(-credits)}</td></tr>` : ''}
-        <tr><td>Payments received</td><td class="num">${pm(received)}</td></tr>
-        <tr class="pd-due"><td>${owed <= 0 ? 'Balance' : 'Balance due'}</td><td class="num">${pm(Math.max(0, owed))}</td></tr>
+        ${t.credits ? `<tr><td>Credits / discounts</td><td class="num">${pm(-t.credits)}</td></tr>` : ''}
+        <tr><td>Payments received</td><td class="num">${pm(t.received)}</td></tr>
+        ${t.refunds ? `<tr><td>Refunded to client</td><td class="num">${pm(-t.refunds)}</td></tr>
+        <tr><td>Net paid</td><td class="num">${pm(t.netPaid)}</td></tr>` : ''}
+        <tr class="pd-due"><td>${t.owed > 0 ? 'Balance due' : t.owed < 0 ? 'Owed back to client' : 'Balance'}</td><td class="num">${pm(Math.abs(t.owed))}</td></tr>
       </table>
-      ${owed <= 0 ? '<div class="pd-stamp">Paid in full</div>' : ''}
+      ${t.owed <= 0 && t.received > 0 ? '<div class="pd-stamp">Paid in full</div>' : ''}
 
       <footer class="pd-foot">
         <p class="pd-script">Gracias</p>
         <p>Thank you for celebrating with Venecia. Questions about this invoice? Call ${BUSINESS.phones.split(' · ')[0]}.</p>
       </footer>
     </div>`;
+}
 
-  printDoc(html, `Venecia Invoice ${invoiceNo(c.id)} - ${c.name}`);
+async function printInvoice(clientId) {
+  toast('Preparing invoice…');
+  const b = await fetchClientBundle(clientId);
+  if (!b) { toast('Could not load this client to print.'); return; }
+  printDoc(buildInvoiceHtml(b), `Venecia Invoice ${invoiceNo(b.client.id)} - ${b.client.name}`);
 }
 
 async function printReceipt(paymentId) {

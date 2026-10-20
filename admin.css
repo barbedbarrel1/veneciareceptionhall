@@ -93,12 +93,14 @@ h2.section-title:first-child { margin-top: 0; }
 .btn-sm { padding: .35rem .8rem; font-size: .75rem; }
 
 /* ---------- dashboard ---------- */
-.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: .9rem; margin-bottom: 1.2rem; }
-@media (max-width: 820px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
+.stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: .9rem; margin-bottom: 1.2rem; }
+@media (max-width: 1000px) { .stat-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 620px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
 .stat { padding: 1rem 1.1rem; }
 .stat .label { font-size: .7rem; letter-spacing: .12em; text-transform: uppercase; color: var(--grey); }
 .stat .value { font-family: var(--font-display); font-size: 1.8rem; font-weight: 500; color: var(--teal-deep); }
 .stat .value.warn { color: var(--yellow); }
+.stat .value.refund { color: var(--red); }
 
 .capacity { padding: 1rem 1.1rem; margin-bottom: 1.2rem; }
 .capacity .row { display: flex; justify-content: space-between; font-size: .85rem; margin-bottom: .5rem; }
@@ -212,6 +214,50 @@ th.num { text-align: right; }
 }
 .toast.show { display: block; }
 
+/* ---------- clickable dashboard rows ---------- */
+.clickable { cursor: pointer; transition: background .15s, box-shadow .15s, transform .15s; }
+.attn-item.clickable:hover { box-shadow: 0 8px 24px rgba(18,16,14,.12); transform: translateY(-1px); }
+.upcoming-row.clickable:hover { background: var(--teal-soft); }
+.clickable:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.attn-item.clickable::after, .upcoming-row.clickable::after { content: '›'; color: var(--grey); font-size: 1.4rem; margin-left: .6rem; }
+#clientRows tr { cursor: pointer; }
+
+/* ---------- client invoice page ---------- */
+.modal.wide { max-width: 900px; }
+.cv-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.cv-name { font-size: 1.9rem !important; margin-bottom: .15rem !important; }
+.cv-sub { font-size: .9rem; color: var(--grey); }
+.cv-sub a { color: var(--teal); }
+.cv-close { background: none; border: none; font-size: 2rem; line-height: 1; color: var(--grey); padding: 0 .3rem; }
+.cv-close:hover { color: var(--ink); }
+.cv-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.1rem 0; }
+.cv-btn { font-size: 1rem; padding: .75rem 1.2rem; min-height: 48px; } /* big, easy targets */
+.cv-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .7rem; margin-bottom: 1.1rem; }
+.cv-tile { background: var(--ivory); border-radius: 10px; padding: .75rem .9rem; border: 1px solid #eee8db; }
+.cv-tile .label { font-size: .68rem; letter-spacing: .15em; text-transform: uppercase; color: var(--grey); }
+.cv-tile .value { font-family: var(--font-display); font-size: 1.6rem; font-weight: 600; color: var(--teal-deep); }
+.cv-tile.due { background: var(--yellow-soft); border-color: rgba(183,121,31,.35); }
+.cv-tile.due .value { color: var(--yellow); }
+.cv-tile.paid { background: var(--green-soft); border-color: rgba(30,125,79,.3); }
+.cv-tile.paid .value { color: var(--green); font-size: 1.35rem; }
+.cv-tile.over .value, .cv-tile.refund .value { color: var(--red); }
+.cv-tile.refund { background: var(--red-soft); border-color: rgba(192,57,43,.25); }
+.cv-paper {
+  background: #fff; border: 1px solid #e7e2d6; border-radius: 10px; padding: 2rem 2.2rem;
+  box-shadow: 0 4px 18px rgba(18,16,14,.06);
+}
+@media (max-width: 640px) {
+  .cv-paper { padding: 1.1rem .9rem; overflow-x: auto; }
+  .cv-btn { flex: 1 1 45%; }
+  .cv-paper .pd-head { flex-direction: column; gap: .8rem; }
+  .cv-paper .pd-meta { text-align: left; }
+}
+.cv-paper .receipt-btn { font-size: .75rem; padding: .3rem .55rem; opacity: 1; white-space: nowrap; }
+.form-tip { font-size: .85rem; background: var(--teal-soft); color: var(--teal-deep); border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem; }
+.pe-owes { font-size: 1rem; margin-bottom: 1rem; color: var(--grey); }
+.pe-owes strong { color: var(--ink); }
+.modal input.pe-amount { font-size: 1.5rem; padding: .6rem .8rem; }
+
 /* ---------- payment entry safety ---------- */
 .pay-row .credit { color: var(--green); }
 .pay-preview:empty { display: none; }
@@ -282,6 +328,8 @@ th.num { text-align: right; }
 .pd-items { columns: 2; column-gap: 18pt; margin: 6pt 0 0 14pt; font-size: 8.5pt; color: #444; }
 .pd-items li { break-inside: avoid; margin-bottom: 1pt; }
 .pd-muted { color: #777; font-size: 9.5pt; }
+.pd-refund td { color: var(--red); }
+.pd-credit td { color: var(--green); }
 
 .pd-totals { margin: 14pt 0 0 auto; border-collapse: collapse; min-width: 52%; }
 .pd-totals td { padding: 4pt 7pt; }
