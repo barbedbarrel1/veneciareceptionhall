@@ -51,9 +51,23 @@ Search each HTML file for `href="#"` in the `.socials` block and paste their rea
 
 ## Admin panel logic worth knowing
 - **Balance** = contract price − sum of ALL payment rows. Computed by the `client_balances` view in Supabase, never stored, can't go stale.
-- **Credits** (client removes something from a package): stored as NEGATIVE payment rows with a note. They reduce the balance but do NOT count as collected income.
+- **Amounts are always entered as positive numbers — the Type decides how they count.** Deposit/Payment/Credit lower the balance; Refund (money handed back) raises it. The database enforces this (`payments_amount_sign_check`), so a stray minus sign can never inflate what a client owes.
+- **Credits** (client removes something from a package): a Credit row with a note. Lowers the balance but does NOT count as collected income.
+- **Typo guard**: the payment form shows the balance before → after as you type, and asks for confirmation if an amount is more than the client owes (or a refund is more than they've paid).
+- **Fixing a mistake**: the ledger is append-only — reverse a wrong payment with a Refund of the same amount and a note.
 - **Cancellations** are a status change, never a delete — kept deposits stay in collected income and history is preserved.
 - **Convert to client** on an inquiry links the lead to the client record (`converted_client_id`) — this is how you later prove "the website generated $X in bookings."
+
+## Printing (admin)
+- **Invoice**: open a client → 🖨 Invoice (also in the Payments window). Package, included items, full payment history, balance, "Paid in full" stamp when settled. Internal notes are never printed.
+- **Receipt**: 🖨 next to any payment, or "Print receipt" right after adding a payment. Shows the balance *as of that payment*, so reprinting old receipts stays accurate. Has signature lines.
+- **Client list**: Clients tab → 🖨 Print list prints exactly what's filtered on screen, with totals.
+- Choose **Save as PDF** in the print dialog to text/email it to the client. Invoice no. = `VEN-` + first 8 of the client id; receipt no. = `R-` + first 8 of the payment id.
+
+## Videos
+- Database: `videos` table already created on the live project (Oct 19, 2026) from `videos_setup.sql` — only re-run it on a fresh project.
+- Upload the video to YouTube (Unlisted is fine) → Admin → Settings → Videos → paste the link. Shorts links play in a tall frame automatically.
+- The gallery's ▶ Videos tab appears as soon as one video exists. Only thumbnails load; YouTube's player loads when someone taps play, so the page stays fast no matter how many videos there are.
 
 ## Language toggle
 EN/ES button in the nav swaps every element tagged `data-i18n` using the STRINGS object in `main.js`. Choice is saved in localStorage. To change any wording, edit the STRINGS object — both languages live in one place.

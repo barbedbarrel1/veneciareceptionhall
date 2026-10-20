@@ -264,6 +264,40 @@ section { padding: clamp(3.5rem, 8vw, 6.5rem) 0; }
 .lightbox img { max-height: 85vh; max-width: 92vw; border-radius: var(--radius); border: var(--frame); }
 .lightbox-close { position: absolute; top: 1.2rem; right: 1.6rem; background: none; border: none; color: var(--gold); font-size: 2rem; cursor: pointer; }
 
+/* videos — thumbnails only; the player loads on tap */
+.filter-btn[hidden], .video-grid[hidden], .gallery-grid[hidden] { display: none !important; }
+.video-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1rem; }
+@media (max-width: 880px) { .video-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .video-grid { grid-template-columns: 1fr; } }
+.v-item {
+  position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0;
+  border: var(--frame); border-radius: var(--radius); overflow: hidden; cursor: pointer;
+  background: var(--teal-deep); box-shadow: var(--shadow);
+}
+.v-item img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .6s ease; }
+.v-item::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(11,58,54,.75), transparent 55%); }
+.v-play {
+  position: absolute; top: 50%; left: 50%; width: 62px; height: 62px; transform: translate(-50%, -50%);
+  border-radius: 50%; background: rgba(250,247,241,.92); border: 1px solid var(--gold); z-index: 1;
+  box-shadow: 0 6px 22px rgba(0,0,0,.25); transition: transform .3s ease, background .3s ease;
+}
+.v-play::before {
+  content: ''; position: absolute; top: 50%; left: 54%; transform: translate(-50%, -50%);
+  border-style: solid; border-width: 10px 0 10px 16px; border-color: transparent transparent transparent var(--teal-deep);
+}
+.v-title {
+  position: absolute; left: 1rem; right: 1rem; bottom: .8rem; z-index: 1; text-align: left;
+  color: var(--white); font-family: var(--font-display); font-size: 1.15rem; line-height: 1.2;
+}
+.v-item:hover img, .v-item:focus-visible img { transform: scale(1.05); }
+.v-item:hover .v-play, .v-item:focus-visible .v-play { transform: translate(-50%, -50%) scale(1.08); background: var(--gold-soft); }
+.v-item:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+
+.video-frame { width: min(92vw, calc(85vh * 16 / 9)); aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; border: var(--frame); background: #000; }
+.video-frame.vertical { width: min(92vw, calc(85vh * 9 / 16)); aspect-ratio: 9 / 16; }
+.video-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+@media (prefers-reduced-motion: reduce) { .v-item img, .v-play { transition: none; } }
+
 /* ---------- packages ---------- */
 /* packages band: a champagne tint (deeper than the ivory page) with gold
    hairlines, so the white package cards lift off the background instead of

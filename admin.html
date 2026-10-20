@@ -49,6 +49,7 @@
         <div class="card stat"><div class="label">Collected this year</div><div class="value" id="statYear">$0</div></div>
         <div class="card stat"><div class="label">Projected income</div><div class="value" id="statProjected">$0</div></div>
         <div class="card stat"><div class="label">Total outstanding</div><div class="value warn" id="statOutstanding">$0</div></div>
+        <div class="card stat"><div class="label">Refunded this year</div><div class="value refund" id="statRefunded">$0</div></div>
       </div>
 
       <div class="card capacity">
@@ -74,6 +75,7 @@
           <option value="all">All</option>
         </select>
         <span class="spacer"></span>
+        <button class="btn btn-outline" id="printClientsBtn" title="Print the list as currently filtered">🖨 Print list</button>
         <button class="btn btn-teal" id="newClientBtn">+ New client</button>
       </div>
       <div class="card table-wrap">
@@ -81,7 +83,7 @@
           <thead>
             <tr>
               <th>Client</th><th>Event</th><th>Date</th>
-              <th class="num">Contract</th><th class="num">Paid</th><th class="num">Owes</th><th></th>
+              <th class="num">Contract</th><th class="num">Paid</th><th class="num">Owes</th><th>Status</th>
             </tr>
           </thead>
           <tbody id="clientRows"></tbody>
@@ -132,6 +134,33 @@
         <button class="btn btn-teal btn-sm" id="galleryUploadBtn" style="margin-top:.8rem">Upload photo</button>
         <div class="gallery-admin-grid" id="galleryAdminGrid"></div>
       </div>
+
+      <h2 class="section-title" style="margin-top:2rem">Videos</h2>
+      <p style="font-size:.83rem;color:var(--grey);margin-bottom:.8rem">Upload the video to YouTube (Unlisted is fine), then paste the link here. YouTube streams it, so the website stays fast.</p>
+      <div class="card" style="padding:1rem">
+        <form id="videoForm" class="video-form">
+          <div class="vf-field vf-url">
+            <label for="videoUrl">YouTube link</label>
+            <input type="url" id="videoUrl" placeholder="https://youtu.be/… or youtube.com/shorts/…" required>
+          </div>
+          <div class="vf-field">
+            <label for="videoTitle">Title (optional)</label>
+            <input type="text" id="videoTitle" placeholder="e.g. Sofia's Quinceañera" maxlength="80">
+          </div>
+          <div class="vf-field">
+            <label for="videoCategory">Category</label>
+            <select id="videoCategory">
+              <option value="weddings">Weddings</option>
+              <option value="quinceaneras">Quinceañeras</option>
+              <option value="sweet16">Sweet 16</option>
+              <option value="venue">The venue</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-teal btn-sm">Add video</button>
+        </form>
+        <div class="gallery-admin-grid video-admin-grid" id="videoAdminGrid"></div>
+      </div>
     </div>
   </div>
 
@@ -141,6 +170,9 @@
   </div>
 
   <div class="toast" id="toast"></div>
+
+  <!-- PRINT: filled right before window.print(), hidden on screen -->
+  <div id="printArea" aria-hidden="true"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>

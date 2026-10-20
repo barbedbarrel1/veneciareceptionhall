@@ -54,17 +54,23 @@ create table clients (
 );
 
 -- Payments: append-only ledger. Never edit history — add rows.
--- Credits (client removed something) = negative amounts.
+-- Credits (client removed something) = positive amounts with type 'credit'.
 create table payments (
   id uuid primary key default gen_random_uuid(),
   client_id uuid references clients(id) not null,
-  amount numeric(10,2) not null,    -- negative = credit or refund
+  amount numeric(10,2) not null,    -- sign set by type: see payments_amount_sign_check
   type text not null default 'payment'
     check (type in ('deposit','payment','credit','refund')),
   method text,                       -- cash, zelle, card, check...
   note text,
   paid_at date not null default current_date,
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+  -- balance = contract - sum(amount): deposits/payments/credits lower it (positive),
+  -- refunds are money handed back (negative). A wrong sign can't be saved.
+  constraint payments_amount_sign_check check (
+    (type in ('deposit','payment','credit') and amount > 0)
+    or (type = 'refund' and amount < 0)
+  )
 );
 
 -- Gallery: powers gallery.html, managed from admin Settings tab.
