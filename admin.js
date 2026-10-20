@@ -330,20 +330,20 @@ async function openClientView(id) {
   document.getElementById('cvPay').addEventListener('click', () => openPaymentEntry(c.id, 'payment'));
   document.getElementById('cvRefund').addEventListener('click', () => openPaymentEntry(c.id, 'refund'));
   document.getElementById('cvEdit').addEventListener('click', () => openClientForm(c, true));
-  document.getElementById('cvEditDesc').addEventListener('click', () => openDescriptionEditor(b));
   document.querySelectorAll('.cv-paper [data-receipt]').forEach(btn =>
     btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
 }
 
 async function openClientForm(client, isEdit) {
-  const { data: pkgs } = await db.from('packages').select('id,name,base_price').order('sort_order');
+  const { data: pkgs } = await db.from('packages').select('id,name,base_price,included_items').order('sort_order');
+  const pkgOf = id => (pkgs || []).find(p => p.id === id) || null;
+  const pkgLines = id => ((pkgOf(id) || {}).included_items || []).join('\n');
+  // what the invoice says today: this client's own text, or the package's list
+  const startDesc = client ? invoiceItems(client, pkgOf(client.package_id)).join('\n') : '';
 
   openModal(`
     <h3>${isEdit ? 'Edit invoice — ' + esc(client.name) : 'New client'}</h3>
-    ${isEdit ? `<div class="form-tip">
-      <div>To change <strong>what's written</strong> on the invoice (what's included, the title): <button type="button" class="btn btn-outline btn-sm" id="editDescBtn">✎ Edit invoice description</button></div>
-      <div style="margin-top:.45rem">To take off money or give money back, use <strong>＋ Add payment → Credit</strong> or <strong>↩ Refund</strong> on the invoice page — that keeps the history.</div>
-    </div>` : ''}
+    ${isEdit ? '<p class="form-tip">To take off money or give money back, use <strong>＋ Add payment → Credit</strong> or <strong>↩ Refund</strong> on the invoice page — that keeps the history.</p>' : ''}
     <form id="clientForm">
       <div class="row2">
         <div class="field"><label>Name</label><input name="name" required value="${esc(client?.name || '')}"></div>
@@ -372,6 +372,8 @@ async function openClientForm(client, isEdit) {
           ${['active', 'completed', 'cancelled'].map(v => `<option value="${v}" ${client?.status === v ? 'selected' : ''}>${v}</option>`).join('')}
         </select>
       </div>
+      <div class="field"><label for="invoiceDesc">Invoice description (prints on the invoice — one item per line)</label>
+        <textarea name="invoice_desc" id="invoiceDesc" rows="9" placeholder="e.g. Hall rental for 200 guests&#10;Tables, chairs & linens&#10;DJ for 5 hours">${esc(startDesc)}</textarea></div>
       <div class="field"><label>Notes (private — never printed)</label><textarea name="notes" rows="2">${esc(client?.notes || '')}</textarea></div>
       ${!isEdit ? `
       <div class="row2">
@@ -390,19 +392,17 @@ async function openClientForm(client, isEdit) {
   `);
 
   const form = document.getElementById('clientForm');
-  if (isEdit) {
-    document.getElementById('editBack').addEventListener('click', () => openClientView(client.id));
-    document.getElementById('editDescBtn').addEventListener('click', async () => {
-      const b = await fetchClientBundle(client.id);
-      if (b) openDescriptionEditor(b);
-    });
-  }
+  if (isEdit) document.getElementById('editBack').addEventListener('click', () => openClientView(client.id));
 
-  // pre-fill contract price from the chosen package (new clients only)
+  // changing the package: refill the description with the new package's list,
+  // but only if nobody has hand-edited it (never wipe what someone typed)
+  let lastPkgId = form.package_id.value;
   form.package_id.addEventListener('change', () => {
-    if (isEdit) return;
-    const pkg = (pkgs || []).find(p => p.id === form.package_id.value);
-    if (pkg) form.contract_price.value = pkg.base_price;
+    const pkg = pkgOf(form.package_id.value);
+    if (form.invoice_desc.value.trim() === pkgLines(lastPkgId).trim() || !form.invoice_desc.value.trim())
+      form.invoice_desc.value = pkgLines(form.package_id.value);
+    lastPkgId = form.package_id.value;
+    if (!isEdit && pkg) form.contract_price.value = pkg.base_price; // pre-fill price (new clients only)
   });
 
   form.addEventListener('submit', async e => {
@@ -425,7 +425,8 @@ async function openClientForm(client, isEdit) {
       package_id: form.package_id.value || null,
       contract_price: price,
       status: form.status.value,
-      notes: form.notes.value.trim() || null
+      notes: form.notes.value.trim() || null,
+      invoice_items: descToSave(form.invoice_desc.value, pkgOf(form.package_id.value))
     };
 
     let clientId = client?.id;
@@ -459,74 +460,6 @@ async function openClientForm(client, isEdit) {
     loadClients();
     loadDashboard();
     openClientView(clientId); // land on their invoice — ready to print
-  });
-}
-
-/* ---------------- invoice description editor ----------------
-   Changes only the WORDS on this client's invoice (title + what's
-   included). Prices, payments and balances are untouched. */
-function openDescriptionEditor(b) {
-  const { client: c, pkg } = b;
-  const items = invoiceItems(c, pkg);
-  const itemRow = v => `
-    <li class="desc-item">
-      <input type="text" value="${esc(v)}" maxlength="140" aria-label="Included item">
-      <button type="button" class="desc-remove" aria-label="Remove this item" title="Remove">✕</button>
-    </li>`;
-
-  openModal(`
-    <h3>Invoice description — ${esc(c.name)}</h3>
-    <p class="form-tip">This only changes the wording on <strong>this client's</strong> invoice. Prices and payments don't change, and other clients aren't affected.</p>
-    <div class="field">
-      <label for="descTitle">Title</label>
-      <input id="descTitle" maxlength="120" value="${esc(invoiceTitle(c, pkg))}" placeholder="${esc(eventTypeLabel(c.event_type))} event package">
-    </div>
-    <label class="desc-label">What's included</label>
-    <ul class="desc-list" id="descList">${(items.length ? items : ['']).map(itemRow).join('')}</ul>
-    <div class="desc-tools">
-      <button type="button" class="btn btn-outline btn-sm" id="descAdd">＋ Add item</button>
-      ${pkg ? '<button type="button" class="btn btn-outline btn-sm" id="descReset">↺ Reset to package list</button>' : ''}
-    </div>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-outline" id="descBack">← Back to invoice</button>
-      <button type="button" class="btn btn-teal" id="descSave">Save description</button>
-    </div>`, { wide: true });
-
-  const list = document.getElementById('descList');
-  const wireRemove = () => list.querySelectorAll('.desc-remove').forEach(btn => {
-    btn.onclick = () => btn.closest('.desc-item').remove();
-  });
-  wireRemove();
-  document.getElementById('descAdd').addEventListener('click', () => {
-    list.insertAdjacentHTML('beforeend', itemRow(''));
-    wireRemove();
-    list.lastElementChild.querySelector('input').focus();
-  });
-  const resetBtn = document.getElementById('descReset');
-  if (resetBtn) resetBtn.addEventListener('click', () => {
-    document.getElementById('descTitle').value = pkg.name;
-    list.innerHTML = (pkg.included_items || []).map(itemRow).join('');
-    wireRemove();
-  });
-  document.getElementById('descBack').addEventListener('click', () => openClientView(c.id));
-
-  document.getElementById('descSave').addEventListener('click', async () => {
-    const title = document.getElementById('descTitle').value.trim();
-    const newItems = [...list.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
-    const pkgItems = (pkg && pkg.included_items) || [];
-    const sameAsPkg = pkg && newItems.length === pkgItems.length && newItems.every((v, i) => v === pkgItems[i]);
-    // store null when it matches the package, so the invoice keeps following
-    // the package (and any later package edits) like it does today
-    const payload = {
-      invoice_title: !title || (pkg && title === pkg.name) ? null : title,
-      invoice_items: sameAsPkg || (!pkg && !newItems.length) ? null : newItems
-    };
-    const btn = document.getElementById('descSave');
-    btn.disabled = true;
-    const { error } = await db.from('clients').update(payload).eq('id', c.id);
-    if (error) { btn.disabled = false; toast('Could not save — ' + error.message); return; }
-    toast('Invoice description saved.');
-    openClientView(c.id);
   });
 }
 
@@ -1034,7 +967,15 @@ function invoiceItems(c, pkg) {
   if (Array.isArray(c.invoice_items)) return c.invoice_items; // [] = deliberately cleared
   return (pkg && pkg.included_items) || [];
 }
-const hasCustomDescription = c => c.invoice_title != null || c.invoice_items != null;
+
+// what to store for the typed description: null when it's exactly the
+// package's list (so the invoice keeps following the package, like today)
+function descToSave(text, pkg) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const pkgItems = (pkg && pkg.included_items) || [];
+  if (lines.length === pkgItems.length && lines.every((l, i) => l === pkgItems[i])) return null;
+  return lines.length || pkg ? lines : null;
+}
 
 function billToBlock(c, pkg) {
   return `
@@ -1080,11 +1021,9 @@ function buildInvoiceHtml(b, { onScreen = false } = {}) {
           <tr>
             <td>
               <strong>${esc(invoiceTitle(c, pkg) || eventTypeLabel(c.event_type) + ' event package')}</strong>
-              ${onScreen && hasCustomDescription(c) ? '<span class="desc-custom">edited</span>' : ''}
               <div class="pd-sub">${eventTypeLabel(c.event_type)} · ${fmtDate(c.event_date)}</div>
               ${invoiceItems(c, pkg).length
                 ? `<ul class="pd-items">${invoiceItems(c, pkg).map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
-              ${onScreen ? '<button type="button" class="desc-edit-btn" id="cvEditDesc">✎ Edit description</button>' : ''}
             </td>
             <td class="num">${pm(c.contract_price)}</td>
           </tr>
