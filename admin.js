@@ -330,6 +330,7 @@ async function openClientView(id) {
   document.getElementById('cvPay').addEventListener('click', () => openPaymentEntry(c.id, 'payment'));
   document.getElementById('cvRefund').addEventListener('click', () => openPaymentEntry(c.id, 'refund'));
   document.getElementById('cvEdit').addEventListener('click', () => openClientForm(c, true));
+  document.getElementById('cvEditDesc').addEventListener('click', () => openDescriptionEditor(b));
   document.querySelectorAll('.cv-paper [data-receipt]').forEach(btn =>
     btn.addEventListener('click', () => printReceipt(btn.dataset.receipt)));
 }
@@ -339,7 +340,10 @@ async function openClientForm(client, isEdit) {
 
   openModal(`
     <h3>${isEdit ? 'Edit invoice — ' + esc(client.name) : 'New client'}</h3>
-    ${isEdit ? '<p class="form-tip">To take off a discount or give money back, use <strong>＋ Add payment → Credit</strong> or <strong>↩ Refund</strong> on the invoice page — that keeps the history.</p>' : ''}
+    ${isEdit ? `<div class="form-tip">
+      <div>To change <strong>what's written</strong> on the invoice (what's included, the title): <button type="button" class="btn btn-outline btn-sm" id="editDescBtn">✎ Edit invoice description</button></div>
+      <div style="margin-top:.45rem">To take off money or give money back, use <strong>＋ Add payment → Credit</strong> or <strong>↩ Refund</strong> on the invoice page — that keeps the history.</div>
+    </div>` : ''}
     <form id="clientForm">
       <div class="row2">
         <div class="field"><label>Name</label><input name="name" required value="${esc(client?.name || '')}"></div>
@@ -386,7 +390,13 @@ async function openClientForm(client, isEdit) {
   `);
 
   const form = document.getElementById('clientForm');
-  if (isEdit) document.getElementById('editBack').addEventListener('click', () => openClientView(client.id));
+  if (isEdit) {
+    document.getElementById('editBack').addEventListener('click', () => openClientView(client.id));
+    document.getElementById('editDescBtn').addEventListener('click', async () => {
+      const b = await fetchClientBundle(client.id);
+      if (b) openDescriptionEditor(b);
+    });
+  }
 
   // pre-fill contract price from the chosen package (new clients only)
   form.package_id.addEventListener('change', () => {
@@ -449,6 +459,74 @@ async function openClientForm(client, isEdit) {
     loadClients();
     loadDashboard();
     openClientView(clientId); // land on their invoice — ready to print
+  });
+}
+
+/* ---------------- invoice description editor ----------------
+   Changes only the WORDS on this client's invoice (title + what's
+   included). Prices, payments and balances are untouched. */
+function openDescriptionEditor(b) {
+  const { client: c, pkg } = b;
+  const items = invoiceItems(c, pkg);
+  const itemRow = v => `
+    <li class="desc-item">
+      <input type="text" value="${esc(v)}" maxlength="140" aria-label="Included item">
+      <button type="button" class="desc-remove" aria-label="Remove this item" title="Remove">✕</button>
+    </li>`;
+
+  openModal(`
+    <h3>Invoice description — ${esc(c.name)}</h3>
+    <p class="form-tip">This only changes the wording on <strong>this client's</strong> invoice. Prices and payments don't change, and other clients aren't affected.</p>
+    <div class="field">
+      <label for="descTitle">Title</label>
+      <input id="descTitle" maxlength="120" value="${esc(invoiceTitle(c, pkg))}" placeholder="${esc(eventTypeLabel(c.event_type))} event package">
+    </div>
+    <label class="desc-label">What's included</label>
+    <ul class="desc-list" id="descList">${(items.length ? items : ['']).map(itemRow).join('')}</ul>
+    <div class="desc-tools">
+      <button type="button" class="btn btn-outline btn-sm" id="descAdd">＋ Add item</button>
+      ${pkg ? '<button type="button" class="btn btn-outline btn-sm" id="descReset">↺ Reset to package list</button>' : ''}
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="descBack">← Back to invoice</button>
+      <button type="button" class="btn btn-teal" id="descSave">Save description</button>
+    </div>`, { wide: true });
+
+  const list = document.getElementById('descList');
+  const wireRemove = () => list.querySelectorAll('.desc-remove').forEach(btn => {
+    btn.onclick = () => btn.closest('.desc-item').remove();
+  });
+  wireRemove();
+  document.getElementById('descAdd').addEventListener('click', () => {
+    list.insertAdjacentHTML('beforeend', itemRow(''));
+    wireRemove();
+    list.lastElementChild.querySelector('input').focus();
+  });
+  const resetBtn = document.getElementById('descReset');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    document.getElementById('descTitle').value = pkg.name;
+    list.innerHTML = (pkg.included_items || []).map(itemRow).join('');
+    wireRemove();
+  });
+  document.getElementById('descBack').addEventListener('click', () => openClientView(c.id));
+
+  document.getElementById('descSave').addEventListener('click', async () => {
+    const title = document.getElementById('descTitle').value.trim();
+    const newItems = [...list.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
+    const pkgItems = (pkg && pkg.included_items) || [];
+    const sameAsPkg = pkg && newItems.length === pkgItems.length && newItems.every((v, i) => v === pkgItems[i]);
+    // store null when it matches the package, so the invoice keeps following
+    // the package (and any later package edits) like it does today
+    const payload = {
+      invoice_title: !title || (pkg && title === pkg.name) ? null : title,
+      invoice_items: sameAsPkg || (!pkg && !newItems.length) ? null : newItems
+    };
+    const btn = document.getElementById('descSave');
+    btn.disabled = true;
+    const { error } = await db.from('clients').update(payload).eq('id', c.id);
+    if (error) { btn.disabled = false; toast('Could not save — ' + error.message); return; }
+    toast('Invoice description saved.');
+    openClientView(c.id);
   });
 }
 
@@ -695,59 +773,180 @@ async function deletePackage(pkg) {
   loadPackagesAdmin();
 }
 
-/* ---------------- settings: gallery ---------------- */
+/* ---------------- settings: gallery ----------------
+   The database stores ONE ROW PER CATEGORY (a photo in Weddings + Venue
+   = 2 rows sharing an image_url). The public gallery depends on that, so
+   we keep it — but the admin groups rows back into one tile per photo,
+   which is what a person actually thinks in. */
+const GAL_CATS = [['venue', 'The venue'], ['weddings', 'Weddings'], ['quinceaneras', 'Quinceañeras'], ['sweet16', 'Sweet 16'], ['other', 'Other']];
+const galCatLabel = c => (GAL_CATS.find(([v]) => v === c) || [c, c])[1];
+let galRows = [];
+let galFilter = 'all';
+
+function galPhotos() {
+  const map = new Map();
+  galRows.forEach(r => {
+    if (!map.has(r.image_url)) map.set(r.image_url, { url: r.image_url, rows: [], alt: r.alt_text || '', created: r.created_at || '' });
+    const ph = map.get(r.image_url);
+    ph.rows.push(r);
+    if ((r.created_at || '') > ph.created) ph.created = r.created_at;
+  });
+  return [...map.values()]
+    .map(ph => ({ ...ph, cats: ph.rows.map(r => r.category) }))
+    .sort((a, b) => b.created.localeCompare(a.created)); // newest first
+}
+
 async function loadGalleryAdmin() {
   const { data, error } = await db.from('gallery').select('*').order('sort_order');
   if (error) { toast('Could not load gallery.'); return; }
-
-  const grid = document.getElementById('galleryAdminGrid');
-  grid.innerHTML = (data || []).map(g => `
-    <div class="g-thumb" data-id="${g.id}">
-      <img src="${g.image_url}" alt="${g.alt_text || ''}" loading="lazy">
-      <span class="cat">${g.category}</span>
-      <button class="del" data-action="delete">Delete</button>
-    </div>`).join('');
-
-  grid.querySelectorAll('.g-thumb').forEach(thumb => {
-    const item = data.find(g => g.id === thumb.dataset.id);
-    thumb.querySelector('.del').addEventListener('click', () => deleteGalleryItem(item));
-  });
+  galRows = data || [];
+  renderGalleryAdmin();
 }
 
-document.getElementById('galleryUploadBtn').addEventListener('click', async () => {
-  const fileInput = document.getElementById('galleryFile');
-  const file = fileInput.files[0];
-  if (!file) { toast('Choose a photo first.'); return; }
+function renderGalleryAdmin() {
+  const photos = galPhotos();
+  document.getElementById('galleryCount').textContent = `${photos.length} photo${photos.length === 1 ? '' : 's'}`;
+
+  // filter pills with live counts
+  const counts = Object.fromEntries(GAL_CATS.map(([v]) => [v, photos.filter(p => p.cats.includes(v)).length]));
+  document.getElementById('galFilters').innerHTML =
+    [['all', 'All', photos.length], ...GAL_CATS.map(([v, l]) => [v, l, counts[v]])]
+      .map(([v, l, n]) => `<button type="button" role="tab" class="gal-filter ${galFilter === v ? 'active' : ''}" aria-selected="${galFilter === v}" data-f="${v}">${l} <span>${n}</span></button>`).join('');
+  document.querySelectorAll('.gal-filter').forEach(b => b.addEventListener('click', () => { galFilter = b.dataset.f; renderGalleryAdmin(); }));
+
+  const shown = galFilter === 'all' ? photos : photos.filter(p => p.cats.includes(galFilter));
+  const grid = document.getElementById('galleryAdminGrid');
+  grid.innerHTML = shown.length ? shown.map((ph, i) => `
+    <button type="button" class="gal-tile" data-i="${i}" aria-label="Edit photo: ${esc(ph.alt || ph.cats.map(galCatLabel).join(', '))}">
+      <img src="${esc(ph.url)}" alt="" loading="lazy" decoding="async">
+      <span class="gal-tile-cats">${ph.cats.map(c => `<span>${galCatLabel(c)}</span>`).join('')}</span>
+      <span class="gal-tile-edit" aria-hidden="true">✎ Edit</span>
+    </button>`).join('')
+    : `<p class="gal-empty">${galFilter === 'all' ? 'No photos yet — add some above.' : 'No photos in this category yet.'}</p>`;
+  grid.querySelectorAll('.gal-tile').forEach(t => t.addEventListener('click', () => openPhotoEditor(shown[Number(t.dataset.i)])));
+}
+
+/* --- upload: several photos at once, resized in the browser first ---
+   Phone photos are often 4–8 MB at 4000px wide. The website never shows
+   them bigger than ~1600px, so we shrink them to 2000px JPEGs before
+   upload. Same look on screen, roughly 5–10x smaller files: the public
+   gallery loads faster and Supabase storage lasts much longer. */
+const galInput = document.getElementById('galleryFile');
+const galDrop = document.getElementById('galDropZone');
+const galBtn = document.getElementById('galleryUploadBtn');
+let galPicked = [];
+
+function setPicked(files) {
+  galPicked = [...files].filter(f => f.type.startsWith('image/'));
+  document.getElementById('galPicked').textContent = galPicked.length
+    ? `${galPicked.length} photo${galPicked.length === 1 ? '' : 's'} ready: ${galPicked.slice(0, 3).map(f => f.name).join(', ')}${galPicked.length > 3 ? '…' : ''}`
+    : 'You can pick several at once';
+  galDrop.classList.toggle('has-files', galPicked.length > 0);
+  galBtn.disabled = !galPicked.length;
+  galBtn.textContent = galPicked.length > 1 ? `Upload ${galPicked.length} photos` : 'Upload';
+}
+galInput.addEventListener('change', () => setPicked(galInput.files));
+['dragenter', 'dragover'].forEach(ev => galDrop.addEventListener(ev, e => { e.preventDefault(); galDrop.classList.add('drag'); }));
+['dragleave', 'drop'].forEach(ev => galDrop.addEventListener(ev, e => { e.preventDefault(); galDrop.classList.remove('drag'); }));
+galDrop.addEventListener('drop', e => setPicked(e.dataTransfer.files));
+
+async function shrinkImage(file, maxSide = 2000, quality = 0.85) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+    // only use the shrunk copy when it really is smaller
+    return blob && blob.size < file.size ? { blob, ext: 'jpg' } : { blob: file, ext: null };
+  } catch (e) {
+    return { blob: file, ext: null }; // a format the browser can't read (e.g. HEIC): upload as-is
+  }
+}
+
+galBtn.addEventListener('click', async () => {
+  if (!galPicked.length) { toast('Choose photos first.'); return; }
   const cats = [...document.querySelectorAll('#galleryCats input:checked')].map(c => c.value);
-  if (!cats.length) { toast('Check at least one category.'); return; }
+  if (!cats.length) { toast('Pick at least one category for these photos.'); return; }
 
-  // storage keys choke on spaces/accents — strip them from the filename
-  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '');
-  const path = `${Date.now()}-${safeName}`;
-  const { error: upErr } = await db.storage.from('gallery-images').upload(path, file);
-  if (upErr) { toast('Upload failed — ' + upErr.message); return; }
-
-  const { data: pub } = db.storage.from('gallery-images').getPublicUrl(path);
-  // one photo can live in several categories — one gallery row per checked box,
-  // all pointing at the same uploaded file
-  const rows = cats.map(category => ({
-    image_url: pub.publicUrl, category, alt_text: `Venecia Reception Hall — ${category}`
-  }));
-  const { error: insErr } = await db.from('gallery').insert(rows);
-  if (insErr) { toast('Uploaded, but could not save it to the gallery list.'); return; }
-
-  toast(cats.length > 1 ? `Photo added to ${cats.length} categories.` : 'Photo uploaded.');
-  fileInput.value = '';
+  const progress = document.getElementById('galProgress');
+  galBtn.disabled = true;
+  let done = 0, failed = 0;
+  for (const file of galPicked) {
+    progress.textContent = `Uploading ${done + failed + 1} of ${galPicked.length}…`;
+    const { blob, ext } = await shrinkImage(file);
+    // storage keys choke on spaces/accents — strip them from the filename
+    let safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '');
+    if (ext) safeName = safeName.replace(/\.[^.]+$/, '') + '.' + ext;
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${safeName}`;
+    const { error: upErr } = await db.storage.from('gallery-images').upload(path, blob, { contentType: ext ? 'image/jpeg' : file.type });
+    if (upErr) { failed++; continue; }
+    const { data: pub } = db.storage.from('gallery-images').getPublicUrl(path);
+    const { error: insErr } = await db.from('gallery').insert(cats.map(category => ({
+      image_url: pub.publicUrl, category, alt_text: `Venecia Reception Hall — ${category}`
+    })));
+    if (insErr) failed++; else done++;
+  }
+  progress.textContent = '';
+  toast(failed ? `${done} uploaded, ${failed} failed — try those again.` : `${done} photo${done === 1 ? '' : 's'} added.`);
+  galInput.value = '';
+  setPicked([]);
   document.querySelectorAll('#galleryCats input:checked').forEach(c => c.checked = false);
   loadGalleryAdmin();
 });
 
-async function deleteGalleryItem(item) {
-  if (!confirm(`Remove this photo from "${item.category}"? (If it's in other categories too, those copies stay.)`)) return;
-  const { error } = await db.from('gallery').delete().eq('id', item.id);
-  if (error) { toast('Could not delete photo.'); return; }
-  toast('Photo deleted.');
-  loadGalleryAdmin();
+/* --- photo editor: categories, Google description, delete --- */
+function openPhotoEditor(ph) {
+  openModal(`
+    <h3>Edit photo</h3>
+    <div class="ph-edit">
+      <img class="ph-edit-img" src="${esc(ph.url)}" alt="">
+      <div>
+        <div class="gal-label">Show this photo in</div>
+        <div class="cat-pills" id="phCats">
+          ${GAL_CATS.map(([v, l]) => `<label><input type="checkbox" value="${v}" ${ph.cats.includes(v) ? 'checked' : ''}><span>${l}</span></label>`).join('')}
+        </div>
+        <div class="field" style="margin-top:1rem">
+          <label for="phAlt">Photo description <span class="muted">(for Google & screen readers)</span></label>
+          <input id="phAlt" maxlength="140" value="${esc(ph.alt)}" placeholder="e.g. Quinceañera head table with gold chargers and pink uplighting">
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions spread">
+      <button type="button" class="btn btn-danger" id="phDelete">Delete photo</button>
+      <span style="display:flex;gap:.6rem">
+        <button type="button" class="btn btn-outline" id="modalCancel">Cancel</button>
+        <button type="button" class="btn btn-teal" id="phSave">Save</button>
+      </span>
+    </div>`);
+
+  document.getElementById('phSave').addEventListener('click', async () => {
+    const want = [...document.querySelectorAll('#phCats input:checked')].map(c => c.value);
+    if (!want.length) { toast('Pick at least one category — or use Delete photo.'); return; }
+    const alt = document.getElementById('phAlt').value.trim() || `Venecia Reception Hall — ${want[0]}`;
+    const addCats = want.filter(c => !ph.cats.includes(c));
+    const removeRows = ph.rows.filter(r => !want.includes(r.category));
+    const ops = [];
+    if (addCats.length) ops.push(db.from('gallery').insert(addCats.map(category => ({ image_url: ph.url, category, alt_text: alt }))));
+    removeRows.forEach(r => ops.push(db.from('gallery').delete().eq('id', r.id)));
+    if (alt !== ph.alt) ops.push(db.from('gallery').update({ alt_text: alt }).eq('image_url', ph.url));
+    const results = await Promise.all(ops);
+    if (results.some(r => r.error)) { toast('Some changes could not be saved.'); }
+    else toast('Photo updated.');
+    closeModal();
+    loadGalleryAdmin();
+  });
+
+  document.getElementById('phDelete').addEventListener('click', async () => {
+    if (!confirm(`Delete this photo from the website${ph.cats.length > 1 ? ` (it's in ${ph.cats.map(galCatLabel).join(', ')})` : ''}?`)) return;
+    const { error } = await db.from('gallery').delete().eq('image_url', ph.url);
+    if (error) { toast('Could not delete photo.'); return; }
+    toast('Photo deleted.');
+    closeModal();
+    loadGalleryAdmin();
+  });
 }
 
 /* ---------------- printing: invoices, receipts, client list ----------------
@@ -826,6 +1025,17 @@ async function fetchClientBundle(clientId) {
   return { client: cRes.data, payments: pRes.data || [], bal: bRes.data || { total_paid: 0, balance_owed: cRes.data.contract_price }, pkg };
 }
 
+/* invoice description: each client can have their OWN title + list of
+   what's included (clients.invoice_title / invoice_items). When those are
+   empty (null) the invoice simply follows the package — so every existing
+   invoice looks exactly the same until someone edits it. */
+function invoiceTitle(c, pkg) { return c.invoice_title || (pkg ? pkg.name : ''); }
+function invoiceItems(c, pkg) {
+  if (Array.isArray(c.invoice_items)) return c.invoice_items; // [] = deliberately cleared
+  return (pkg && pkg.included_items) || [];
+}
+const hasCustomDescription = c => c.invoice_title != null || c.invoice_items != null;
+
 function billToBlock(c, pkg) {
   return `
     <section class="pd-parties">
@@ -835,7 +1045,7 @@ function billToBlock(c, pkg) {
       </div>
       <div>
         <h4>Event</h4>
-        <p><strong>${eventTypeLabel(c.event_type)}</strong><br>${fmtDate(c.event_date)}${pkg ? '<br>' + esc(pkg.name) : ''}</p>
+        <p><strong>${eventTypeLabel(c.event_type)}</strong><br>${fmtDate(c.event_date)}${invoiceTitle(c, pkg) ? '<br>' + esc(invoiceTitle(c, pkg)) : ''}</p>
       </div>
     </section>`;
 }
@@ -869,10 +1079,12 @@ function buildInvoiceHtml(b, { onScreen = false } = {}) {
         <tbody>
           <tr>
             <td>
-              <strong>${pkg ? esc(pkg.name) : eventTypeLabel(c.event_type) + ' event package'}</strong>
+              <strong>${esc(invoiceTitle(c, pkg) || eventTypeLabel(c.event_type) + ' event package')}</strong>
+              ${onScreen && hasCustomDescription(c) ? '<span class="desc-custom">edited</span>' : ''}
               <div class="pd-sub">${eventTypeLabel(c.event_type)} · ${fmtDate(c.event_date)}</div>
-              ${pkg && (pkg.included_items || []).length
-                ? `<ul class="pd-items">${pkg.included_items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+              ${invoiceItems(c, pkg).length
+                ? `<ul class="pd-items">${invoiceItems(c, pkg).map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+              ${onScreen ? '<button type="button" class="desc-edit-btn" id="cvEditDesc">✎ Edit description</button>' : ''}
             </td>
             <td class="num">${pm(c.contract_price)}</td>
           </tr>
@@ -1043,20 +1255,22 @@ async function loadVideosAdmin() {
     grid.innerHTML = '<p class="empty" style="grid-column:1/-1">Videos aren\'t set up in the database yet (run videos_setup.sql once).</p>';
     return;
   }
+  document.getElementById('videoCount').textContent = `${(data || []).length} video${(data || []).length === 1 ? '' : 's'}`;
   grid.innerHTML = (data || []).length ? data.map(v => `
-    <div class="g-thumb" data-id="${v.id}">
-      <img src="https://i.ytimg.com/vi/${v.youtube_id}/mqdefault.jpg" alt="${esc(v.title || 'Video')}" loading="lazy">
-      <span class="cat">${VIDEO_CAT_LABELS[v.category] || v.category}${v.is_vertical ? ' · Short' : ''}</span>
-      <button class="del" data-action="delete">Delete</button>
-      ${v.title ? `<span class="v-admin-title">${esc(v.title)}</span>` : ''}
-    </div>`).join('') : '<p class="empty" style="grid-column:1/-1">No videos yet.</p>';
+    <div class="gal-tile vid-tile" data-id="${v.id}">
+      <img src="https://i.ytimg.com/vi/${v.youtube_id}/mqdefault.jpg" alt="" loading="lazy" decoding="async">
+      <span class="vid-play" aria-hidden="true">▶</span>
+      ${v.title ? `<span class="vid-title">${esc(v.title)}</span>` : ''}
+      <span class="gal-tile-cats"><span>${VIDEO_CAT_LABELS[v.category] || v.category}</span>${v.is_vertical ? '<span>Short</span>' : ''}</span>
+      <button type="button" class="vid-remove" aria-label="Remove ${esc(v.title || 'this video')} from the website">✕ Remove</button>
+    </div>`).join('') : '<p class="gal-empty">No videos yet — paste a YouTube link above.</p>';
 
-  grid.querySelectorAll('.g-thumb').forEach(thumb => {
-    const v = data.find(x => x.id === thumb.dataset.id);
-    thumb.querySelector('.del').addEventListener('click', async () => {
-      if (!confirm('Remove this video from the website? (It stays on YouTube.)')) return;
+  grid.querySelectorAll('.vid-tile').forEach(tile => {
+    const v = data.find(x => x.id === tile.dataset.id);
+    tile.querySelector('.vid-remove').addEventListener('click', async () => {
+      if (!confirm(`Remove ${v.title ? '"' + v.title + '"' : 'this video'} from the website? (It stays on YouTube.)`)) return;
       const { error: delErr } = await db.from('videos').delete().eq('id', v.id);
-      if (delErr) { toast('Could not delete video.'); return; }
+      if (delErr) { toast('Could not remove video.'); return; }
       toast('Video removed.');
       loadVideosAdmin();
     });

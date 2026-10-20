@@ -113,31 +113,45 @@
       <div id="pkgList"></div>
       <button class="btn btn-outline btn-sm" id="newPkgBtn" style="margin-top:.4rem">+ Add package</button>
 
-      <h2 class="section-title" style="margin-top:2rem">Gallery photos</h2>
-      <div class="card" style="padding:1rem">
-        <div class="row2" style="display:grid;grid-template-columns:1fr 1fr;gap:.8rem">
-          <div>
-            <label style="font-size:.68rem;letter-spacing:.15em;text-transform:uppercase;color:var(--grey)">Photo</label>
-            <input type="file" id="galleryFile" accept="image/*" style="width:100%;font-size:.85rem">
-          </div>
-          <div>
-            <label style="font-size:.68rem;letter-spacing:.15em;text-transform:uppercase;color:var(--grey)">Categories — check all that apply</label>
-            <div id="galleryCats" style="display:flex;flex-wrap:wrap;gap:.3rem 1rem;padding-top:.35rem;font-size:.85rem">
-              <label style="display:flex;align-items:center;gap:.35rem"><input type="checkbox" value="venue"> The venue</label>
-              <label style="display:flex;align-items:center;gap:.35rem"><input type="checkbox" value="weddings"> Weddings</label>
-              <label style="display:flex;align-items:center;gap:.35rem"><input type="checkbox" value="quinceaneras"> Quinceañeras (Sweet 15)</label>
-              <label style="display:flex;align-items:center;gap:.35rem"><input type="checkbox" value="sweet16"> Sweet 16</label>
-              <label style="display:flex;align-items:center;gap:.35rem"><input type="checkbox" value="other"> Other</label>
+      <!-- GALLERY MANAGER: one tile per photo (not per category), filter by
+           category, multi-upload with automatic resizing, click a photo to edit -->
+      <div class="set-head">
+        <h2 class="section-title">Gallery photos</h2>
+        <span class="count-pill" id="galleryCount"></span>
+      </div>
+      <div class="card gal-card">
+        <div class="gal-upload">
+          <label class="gal-drop" id="galDropZone" for="galleryFile">
+            <input type="file" id="galleryFile" accept="image/*" multiple>
+            <span class="gal-drop-icon" aria-hidden="true">＋</span>
+            <span class="gal-drop-text"><strong>Add photos</strong><br>Drag them here or <u>choose from computer</u></span>
+            <span class="gal-drop-sub" id="galPicked">You can pick several at once</span>
+          </label>
+          <div class="gal-upload-side">
+            <div class="gal-label">Show these photos in</div>
+            <div class="cat-pills" id="galleryCats">
+              <label><input type="checkbox" value="venue"><span>The venue</span></label>
+              <label><input type="checkbox" value="weddings"><span>Weddings</span></label>
+              <label><input type="checkbox" value="quinceaneras"><span>Quinceañeras</span></label>
+              <label><input type="checkbox" value="sweet16"><span>Sweet 16</span></label>
+              <label><input type="checkbox" value="other"><span>Other</span></label>
             </div>
+            <button class="btn btn-teal gal-upload-btn" id="galleryUploadBtn" disabled>Upload</button>
+            <div class="gal-progress" id="galProgress" aria-live="polite"></div>
           </div>
         </div>
-        <button class="btn btn-teal btn-sm" id="galleryUploadBtn" style="margin-top:.8rem">Upload photo</button>
-        <div class="gallery-admin-grid" id="galleryAdminGrid"></div>
+
+        <div class="gal-filters" id="galFilters" role="tablist" aria-label="Filter photos by category"></div>
+        <div class="gal-grid" id="galleryAdminGrid"></div>
+        <p class="gal-hint">Click a photo to change its categories, write its description, or delete it.</p>
       </div>
 
-      <h2 class="section-title" style="margin-top:2rem">Videos</h2>
+      <div class="set-head">
+        <h2 class="section-title">Videos</h2>
+        <span class="count-pill" id="videoCount"></span>
+      </div>
       <p style="font-size:.83rem;color:var(--grey);margin-bottom:.8rem">Upload the video to YouTube (Unlisted is fine), then paste the link here. YouTube streams it, so the website stays fast.</p>
-      <div class="card" style="padding:1rem">
+      <div class="card gal-card">
         <form id="videoForm" class="video-form">
           <div class="vf-field vf-url">
             <label for="videoUrl">YouTube link</label>
@@ -159,7 +173,7 @@
           </div>
           <button type="submit" class="btn btn-teal btn-sm">Add video</button>
         </form>
-        <div class="gallery-admin-grid video-admin-grid" id="videoAdminGrid"></div>
+        <div class="gal-grid vid-grid" id="videoAdminGrid"></div>
       </div>
     </div>
   </div>
